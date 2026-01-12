@@ -26,7 +26,7 @@ function addCorsHeaders(response: Response): Response {
 }
 
 const server = Bun.serve({
-  port: 3000,
+  port: process.env.PORT || 3000,
   async fetch(request) {
     try {
       const url = new URL(request.url);
