@@ -22,9 +22,10 @@ export { WeekCalendar } from './WeekCalendar';
 export { FilterChip, FilterChipGroup } from './FilterChip';
 export { StatCard, StatGrid } from './StatCard';
 export { ProgressBar, SegmentedProgress, CircularProgress } from './ProgressBar';
-export { EmptyState, NoScheduleEmpty, NoWorkersEmpty, NoOrdersEmpty, NoResultsEmpty } from './EmptyState';
+export { EmptyState, NoScheduleEmpty, NoWorkersEmpty, NoOrdersEmpty, NoResultsEmpty, NoProductsEmpty } from './EmptyState';
 export { Toast, ToastProvider, useToast } from './Toast';
 export { BottomSheet, ActionSheet } from './BottomSheet';
+export { ProductionLogSheet } from './ProductionLogSheet';
 
 // Existing themed components
 export { Text, View, useThemeColor, type TextProps, type ViewProps } from './Themed';

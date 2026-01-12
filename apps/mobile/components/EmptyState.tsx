@@ -137,6 +137,16 @@ export function NoResultsEmpty({ query, onClear }: { query?: string; onClear?: (
   );
 }
 
+export function NoProductsEmpty() {
+  return (
+    <EmptyState
+      title="No products"
+      description="Products will appear here once they're added to the system"
+      icon={<Package size={48} color={colors.textMuted} strokeWidth={1.5} />}
+    />
+  );
+}
+
 const styles = StyleSheet.create({
   container: {
     alignItems: 'center',
