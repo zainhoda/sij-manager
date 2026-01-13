@@ -1,6 +1,10 @@
 FROM oven/bun:1 AS builder
 WORKDIR /app
 
+# API URL must be set at build time
+ARG EXPO_PUBLIC_API_URL
+ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL
+
 # Copy package files
 COPY package.json bun.lock* ./
 
