@@ -11,6 +11,26 @@ export async function ensureSchema(db: Client) {
   // Enable foreign keys
   await db.execute("PRAGMA foreign_keys = ON");
 
+  // Work categories table (replaces hardcoded category enums)
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS work_categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Components table (product components like "Small Velcro Pocket")
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS components (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Products table
   await db.execute(`
     CREATE TABLE IF NOT EXISTS products (
@@ -28,7 +48,10 @@ export async function ensureSchema(db: Client) {
       name TEXT NOT NULL UNIQUE,
       description TEXT,
       status TEXT DEFAULT 'available' CHECK (status IN ('available', 'in_use', 'maintenance', 'retired')),
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      station_count INTEGER DEFAULT 1,
+      work_category_id INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (work_category_id) REFERENCES work_categories(id)
     )
   `);
 
@@ -40,7 +63,9 @@ export async function ensureSchema(db: Client) {
       employee_id TEXT UNIQUE,
       status TEXT DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'on_leave')),
       skill_category TEXT DEFAULT 'OTHER' CHECK (skill_category IN ('SEWING', 'OTHER')),
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      work_category_id INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (work_category_id) REFERENCES work_categories(id)
     )
   `);
 
@@ -64,14 +89,19 @@ export async function ensureSchema(db: Client) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       product_id INTEGER NOT NULL,
       name TEXT NOT NULL,
-      category TEXT NOT NULL CHECK (category IN ('CUTTING', 'SILKSCREEN', 'PREP', 'SEWING', 'INSPECTION')),
+      category TEXT CHECK (category IN ('CUTTING', 'SILKSCREEN', 'PREP', 'SEWING', 'INSPECTION')),
+      work_category_id INTEGER,
       time_per_piece_seconds INTEGER NOT NULL,
       sequence INTEGER NOT NULL,
-      required_skill_category TEXT NOT NULL CHECK (required_skill_category IN ('SEWING', 'OTHER')),
+      required_skill_category TEXT CHECK (required_skill_category IN ('SEWING', 'OTHER')),
       parent_step_code TEXT,
       equipment_id INTEGER,
+      component_id INTEGER,
+      step_code TEXT,
       FOREIGN KEY (product_id) REFERENCES products(id),
-      FOREIGN KEY (equipment_id) REFERENCES equipment(id)
+      FOREIGN KEY (equipment_id) REFERENCES equipment(id),
+      FOREIGN KEY (work_category_id) REFERENCES work_categories(id),
+      FOREIGN KEY (component_id) REFERENCES components(id)
     )
   `);
 
@@ -244,9 +274,52 @@ export async function ensureSchema(db: Client) {
   await db.execute("CREATE INDEX IF NOT EXISTS idx_task_worker_assignments_worker ON task_worker_assignments(worker_id)");
   await db.execute("CREATE INDEX IF NOT EXISTS idx_assignment_output_history_assignment ON assignment_output_history(assignment_id)");
   await db.execute("CREATE INDEX IF NOT EXISTS idx_assignment_output_history_recorded ON assignment_output_history(recorded_at)");
+
+  // Migration: Add new columns to existing tables
+  // These will fail silently if columns already exist
+  const migrations = [
+    // Equipment table migrations
+    "ALTER TABLE equipment ADD COLUMN station_count INTEGER DEFAULT 1",
+    "ALTER TABLE equipment ADD COLUMN work_category_id INTEGER REFERENCES work_categories(id)",
+    // Workers table migrations
+    "ALTER TABLE workers ADD COLUMN work_category_id INTEGER REFERENCES work_categories(id)",
+    // Product steps table migrations
+    "ALTER TABLE product_steps ADD COLUMN work_category_id INTEGER REFERENCES work_categories(id)",
+    "ALTER TABLE product_steps ADD COLUMN component_id INTEGER REFERENCES components(id)",
+    "ALTER TABLE product_steps ADD COLUMN step_code TEXT",
+  ];
+
+  for (const migration of migrations) {
+    try {
+      await db.execute(migration);
+    } catch (e) {
+      // Column likely already exists, ignore
+    }
+  }
+
+  // Indexes for new columns
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_equipment_work_category ON equipment(work_category_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_workers_work_category ON workers(work_category_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_product_steps_work_category ON product_steps(work_category_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_product_steps_component ON product_steps(component_id)");
+  await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_product_steps_code_product ON product_steps(product_id, step_code)");
 }
 
 // Type definitions for database rows
+export interface WorkCategory {
+  id: number;
+  name: string;
+  description: string | null;
+  created_at: string;
+}
+
+export interface Component {
+  id: number;
+  name: string;
+  description: string | null;
+  created_at: string;
+}
+
 export interface Product {
   id: number;
   name: string;
@@ -258,12 +331,15 @@ export interface ProductStep {
   id: number;
   product_id: number;
   name: string;
-  category: 'CUTTING' | 'SILKSCREEN' | 'PREP' | 'SEWING' | 'INSPECTION';
+  category: string | null; // Kept for backwards compatibility, prefer work_category_id
+  work_category_id: number | null;
   time_per_piece_seconds: number;
   sequence: number;
-  required_skill_category: 'SEWING' | 'OTHER';
+  required_skill_category: string | null; // Kept for backwards compatibility
   parent_step_code: string | null;
   equipment_id: number | null;
+  component_id: number | null;
+  step_code: string | null;
 }
 
 export interface StepDependency {
@@ -310,6 +386,8 @@ export interface Equipment {
   name: string;
   description: string | null;
   status: 'available' | 'in_use' | 'maintenance' | 'retired';
+  station_count: number | null;
+  work_category_id: number | null;
   created_at: string;
 }
 
@@ -318,7 +396,8 @@ export interface Worker {
   name: string;
   employee_id: string | null;
   status: 'active' | 'inactive' | 'on_leave';
-  skill_category: 'SEWING' | 'OTHER';
+  skill_category: 'SEWING' | 'OTHER'; // Kept for backwards compatibility
+  work_category_id: number | null;
   created_at: string;
 }
 

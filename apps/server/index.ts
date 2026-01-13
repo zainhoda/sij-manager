@@ -8,6 +8,10 @@ import { handleCertifications } from "./routes/certifications";
 import { handleProficiencies } from "./routes/proficiencies";
 import { handleAnalytics } from "./routes/analytics";
 import { handleScheduling } from "./routes/scheduling";
+import { handleImports } from "./routes/imports";
+
+// Admin frontend
+import adminHtml from "./admin/index.html";
 
 // Initialize database (this also seeds it)
 import "./db";
@@ -33,6 +37,19 @@ function addCorsHeaders(response: Response): Response {
 
 const server = Bun.serve({
   port: process.env.PORT || 3000,
+
+  // Static routes (HTML imports with bundling)
+  routes: {
+    "/admin": adminHtml,
+    "/admin/*": adminHtml, // SPA fallback for client-side routing
+  },
+
+  development: {
+    hmr: true,
+    console: true,
+  },
+
+  // API routes (dynamic handlers)
   async fetch(request) {
     try {
       const url = new URL(request.url);
@@ -105,6 +122,11 @@ const server = Bun.serve({
       }
 
       response = await handleScheduling(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
+
+      response = await handleImports(request);
       if (response) {
         return addCorsHeaders(response);
       }

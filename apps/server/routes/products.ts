@@ -31,16 +31,20 @@ export async function handleProducts(request: Request): Promise<Response | null>
   if (stepsMatch && request.method === "GET") {
     const productId = parseInt(stepsMatch[1]!);
 
-    // Get all steps for the product
+    // Get all steps for the product with equipment name joined
     const stepsResult = await db.execute({
       sql: `
-      SELECT * FROM product_steps
-      WHERE product_id = ?
-      ORDER BY sequence
+      SELECT
+        ps.*,
+        e.name as equipment_name
+      FROM product_steps ps
+      LEFT JOIN equipment e ON ps.equipment_id = e.id
+      WHERE ps.product_id = ?
+      ORDER BY ps.sequence
     `,
       args: [productId]
     });
-    const steps = stepsResult.rows as unknown as ProductStep[];
+    const steps = stepsResult.rows as unknown as (ProductStep & { equipment_name: string | null })[];
 
     // Get dependencies for each step
     const stepsWithDeps = await Promise.all(steps.map(async step => {
@@ -61,6 +65,231 @@ export async function handleProducts(request: Request): Promise<Response | null>
     }));
 
     return Response.json(stepsWithDeps);
+  }
+
+  // PUT /api/product-steps/:id/dependencies - replace all dependencies for a step
+  const depsMatch = url.pathname.match(/^\/api\/product-steps\/(\d+)\/dependencies$/);
+  if (depsMatch && request.method === "PUT") {
+    const stepId = parseInt(depsMatch[1]!);
+    const body = await request.json() as { dependsOn: number[] };
+
+    // Validate step exists
+    const existing = await db.execute({
+      sql: "SELECT id, product_id FROM product_steps WHERE id = ?",
+      args: [stepId]
+    });
+    if (existing.rows.length === 0) {
+      return Response.json({ error: "Step not found" }, { status: 404 });
+    }
+
+    const productId = (existing.rows[0] as { product_id: number }).product_id;
+
+    // Validate all dependency IDs exist and belong to the same product
+    if (body.dependsOn && body.dependsOn.length > 0) {
+      const placeholders = body.dependsOn.map(() => "?").join(",");
+      const validSteps = await db.execute({
+        sql: `SELECT id FROM product_steps WHERE id IN (${placeholders}) AND product_id = ?`,
+        args: [...body.dependsOn, productId]
+      });
+      if (validSteps.rows.length !== body.dependsOn.length) {
+        return Response.json({ error: "Invalid dependency IDs" }, { status: 400 });
+      }
+    }
+
+    // Delete existing dependencies
+    await db.execute({
+      sql: "DELETE FROM step_dependencies WHERE step_id = ?",
+      args: [stepId]
+    });
+
+    // Insert new dependencies
+    for (const depId of body.dependsOn || []) {
+      await db.execute({
+        sql: "INSERT INTO step_dependencies (step_id, depends_on_step_id) VALUES (?, ?)",
+        args: [stepId, depId]
+      });
+    }
+
+    // Return updated dependencies
+    const deps = await db.execute({
+      sql: "SELECT depends_on_step_id FROM step_dependencies WHERE step_id = ?",
+      args: [stepId]
+    });
+
+    return Response.json({
+      stepId,
+      dependencies: deps.rows.map((r: any) => r.depends_on_step_id)
+    });
+  }
+
+  // POST /api/products/:id/steps - create a new product step
+  const createStepMatch = url.pathname.match(/^\/api\/products\/(\d+)\/steps$/);
+  if (createStepMatch && request.method === "POST") {
+    const productId = parseInt(createStepMatch[1]!);
+    const body = await request.json() as Partial<ProductStep>;
+
+    // Validate product exists
+    const productExists = await db.execute({
+      sql: "SELECT id FROM products WHERE id = ?",
+      args: [productId]
+    });
+    if (productExists.rows.length === 0) {
+      return Response.json({ error: "Product not found" }, { status: 404 });
+    }
+
+    // Validate required fields
+    if (!body.step_code || body.step_code.trim() === "") {
+      return Response.json({ error: "Step code is required" }, { status: 400 });
+    }
+    if (!body.name || body.name.trim() === "") {
+      return Response.json({ error: "Step name is required" }, { status: 400 });
+    }
+
+    // Validate step_code is unique within product
+    const duplicateCheck = await db.execute({
+      sql: "SELECT id FROM product_steps WHERE product_id = ? AND step_code = ?",
+      args: [productId, body.step_code.trim()]
+    });
+    if (duplicateCheck.rows.length > 0) {
+      return Response.json({ error: "Step code must be unique within the product" }, { status: 400 });
+    }
+
+    // Get next sequence number
+    const maxSeq = await db.execute({
+      sql: "SELECT MAX(sequence) as max_seq FROM product_steps WHERE product_id = ?",
+      args: [productId]
+    });
+    const nextSequence = ((maxSeq.rows[0] as { max_seq: number | null })?.max_seq || 0) + 1;
+
+    // Insert new step
+    const result = await db.execute({
+      sql: `INSERT INTO product_steps (product_id, step_code, name, category, time_per_piece_seconds, sequence, equipment_id, required_skill_category)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        productId,
+        body.step_code.trim(),
+        body.name.trim(),
+        body.category || null,
+        body.time_per_piece_seconds || 60,
+        body.sequence || nextSequence,
+        body.equipment_id || null,
+        "OTHER" // Default skill category
+      ]
+    });
+
+    // Return the created step with equipment name
+    const newStep = await db.execute({
+      sql: `SELECT ps.*, e.name as equipment_name
+            FROM product_steps ps
+            LEFT JOIN equipment e ON ps.equipment_id = e.id
+            WHERE ps.id = ?`,
+      args: [result.lastInsertRowid]
+    });
+
+    return Response.json(newStep.rows[0], { status: 201 });
+  }
+
+  // DELETE /api/product-steps/:id - delete a product step
+  const deleteStepMatch = url.pathname.match(/^\/api\/product-steps\/(\d+)$/);
+  if (deleteStepMatch && request.method === "DELETE") {
+    const stepId = parseInt(deleteStepMatch[1]!);
+
+    // Check step exists
+    const existing = await db.execute({
+      sql: "SELECT id FROM product_steps WHERE id = ?",
+      args: [stepId]
+    });
+    if (existing.rows.length === 0) {
+      return Response.json({ error: "Step not found" }, { status: 404 });
+    }
+
+    // Delete dependencies first (where this step is a dependency)
+    await db.execute({
+      sql: "DELETE FROM step_dependencies WHERE step_id = ? OR depends_on_step_id = ?",
+      args: [stepId, stepId]
+    });
+
+    // Delete the step
+    await db.execute({
+      sql: "DELETE FROM product_steps WHERE id = ?",
+      args: [stepId]
+    });
+
+    return Response.json({ success: true, deletedId: stepId });
+  }
+
+  // PATCH /api/product-steps/:id - update a product step
+  const stepPatchMatch = url.pathname.match(/^\/api\/product-steps\/(\d+)$/);
+  if (stepPatchMatch && request.method === "PATCH") {
+    const stepId = parseInt(stepPatchMatch[1]!);
+    const body = await request.json() as Partial<ProductStep>;
+
+    // Validate step exists and get product_id
+    const existing = await db.execute({
+      sql: "SELECT id, product_id FROM product_steps WHERE id = ?",
+      args: [stepId]
+    });
+    if (existing.rows.length === 0) {
+      return Response.json({ error: "Step not found" }, { status: 404 });
+    }
+    const productId = (existing.rows[0] as { product_id: number }).product_id;
+
+    // Validate step_code if being updated
+    if ("step_code" in body) {
+      const newStepCode = body.step_code;
+
+      // step_code is required (cannot be null or empty)
+      if (!newStepCode || newStepCode.trim() === "") {
+        return Response.json({ error: "Step code is required" }, { status: 400 });
+      }
+
+      // step_code must be unique within the product
+      const duplicateCheck = await db.execute({
+        sql: "SELECT id FROM product_steps WHERE product_id = ? AND step_code = ? AND id != ?",
+        args: [productId, newStepCode.trim(), stepId]
+      });
+      if (duplicateCheck.rows.length > 0) {
+        return Response.json({ error: "Step code must be unique within the product" }, { status: 400 });
+      }
+
+      // Trim the step_code
+      body.step_code = newStepCode.trim();
+    }
+
+    // Build dynamic update query
+    const allowedFields = ["name", "category", "time_per_piece_seconds", "sequence", "step_code", "equipment_id"];
+    const updates: string[] = [];
+    const args: (string | number | null)[] = [];
+
+    for (const field of allowedFields) {
+      if (field in body) {
+        updates.push(`${field} = ?`);
+        args.push((body as Record<string, unknown>)[field] as string | number | null);
+      }
+    }
+
+    if (updates.length === 0) {
+      return Response.json({ error: "No valid fields to update" }, { status: 400 });
+    }
+
+    args.push(stepId);
+    await db.execute({
+      sql: `UPDATE product_steps SET ${updates.join(", ")} WHERE id = ?`,
+      args
+    });
+
+    // Return updated step with equipment name
+    const result = await db.execute({
+      sql: `
+        SELECT ps.*, e.name as equipment_name
+        FROM product_steps ps
+        LEFT JOIN equipment e ON ps.equipment_id = e.id
+        WHERE ps.id = ?
+      `,
+      args: [stepId]
+    });
+
+    return Response.json(result.rows[0]);
   }
 
   return null;
