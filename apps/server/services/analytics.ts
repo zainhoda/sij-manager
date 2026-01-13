@@ -39,12 +39,18 @@ interface ProficiencyAdjustment {
 }
 
 // Get worker productivity summary
-export function getWorkerProductivity(workerId: number): ProductivitySummary | null {
-  const worker = db.query("SELECT id, name FROM workers WHERE id = ?").get(workerId) as { id: number; name: string } | null;
+export async function getWorkerProductivity(workerId: number): Promise<ProductivitySummary | null> {
+  const workerResult = await db.execute({
+    sql: "SELECT id, name FROM workers WHERE id = ?",
+    args: [workerId]
+  });
+  const worker = workerResult.rows[0] as unknown as { id: number; name: string } | undefined;
+  
   if (!worker) return null;
 
   // Get completed entries with time calculations
-  const entries = db.query(`
+  const entriesResult = await db.execute({
+    sql: `
     SELECT
       se.id,
       se.product_step_id,
@@ -62,7 +68,11 @@ export function getWorkerProductivity(workerId: number): ProductivitySummary | n
     AND se.actual_start_time IS NOT NULL
     AND se.actual_end_time IS NOT NULL
     ORDER BY se.date DESC
-  `).all(workerId) as {
+  `,
+    args: [workerId]
+  });
+  
+  const entries = entriesResult.rows as unknown as {
     id: number;
     product_step_id: number;
     actual_start_time: string;
@@ -130,17 +140,21 @@ export function getWorkerProductivity(workerId: number): ProductivitySummary | n
   }
 
   // Calculate step breakdown with efficiency and proficiency
-  const stepBreakdown: StepProductivity[] = Object.values(stepMetrics).map((step) => {
+  const stepBreakdown: StepProductivity[] = [];
+  
+  for (const step of Object.values(stepMetrics)) {
     const efficiency = step.totalMinutes > 0
       ? (step.expectedMinutes / step.totalMinutes) * 100
       : 0;
 
     // Get current proficiency
-    const proficiency = db.query(
-      "SELECT level FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?"
-    ).get(workerId, step.stepId) as { level: number } | null;
+    const profResult = await db.execute({
+      sql: "SELECT level FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?",
+      args: [workerId, step.stepId]
+    });
+    const proficiency = profResult.rows[0] as unknown as { level: number } | undefined;
 
-    return {
+    stepBreakdown.push({
       stepId: step.stepId,
       stepName: step.stepName,
       category: step.category,
@@ -149,8 +163,8 @@ export function getWorkerProductivity(workerId: number): ProductivitySummary | n
       averageEfficiency: Math.round(efficiency),
       entryCount: step.entryCount,
       currentProficiency: proficiency?.level ?? 3,
-    };
-  });
+    });
+  }
 
   // Overall efficiency
   const averageEfficiency = totalMinutesWorked > 0
@@ -168,8 +182,9 @@ export function getWorkerProductivity(workerId: number): ProductivitySummary | n
 }
 
 // Get worker productivity history (data points over time)
-export function getWorkerProductivityHistory(workerId: number, days: number = 30): ProductivityDataPoint[] {
-  const entries = db.query(`
+export async function getWorkerProductivityHistory(workerId: number, days: number = 30): Promise<ProductivityDataPoint[]> {
+  const entriesResult = await db.execute({
+    sql: `
     SELECT
       se.date,
       se.actual_start_time,
@@ -184,7 +199,11 @@ export function getWorkerProductivityHistory(workerId: number, days: number = 30
     AND se.actual_end_time IS NOT NULL
     AND se.date >= date('now', '-' || ? || ' days')
     ORDER BY se.date
-  `).all(workerId, days) as {
+  `,
+    args: [workerId, days]
+  });
+  
+  const entries = entriesResult.rows as unknown as {
     date: string;
     actual_start_time: string;
     actual_end_time: string;
@@ -217,8 +236,9 @@ export function getWorkerProductivityHistory(workerId: number, days: number = 30
 }
 
 // Get proficiency change history for a worker
-export function getWorkerProficiencyHistory(workerId: number): ProficiencyHistory[] {
-  return db.query(`
+export async function getWorkerProficiencyHistory(workerId: number): Promise<ProficiencyHistory[]> {
+  const result = await db.execute({
+    sql: `
     SELECT ph.*, ps.name as step_name, p.name as product_name
     FROM proficiency_history ph
     JOIN product_steps ps ON ph.product_step_id = ps.id
@@ -226,15 +246,18 @@ export function getWorkerProficiencyHistory(workerId: number): ProficiencyHistor
     WHERE ph.worker_id = ?
     ORDER BY ph.created_at DESC
     LIMIT 50
-  `).all(workerId) as (ProficiencyHistory & { step_name: string; product_name: string })[];
+  `,
+    args: [workerId]
+  });
+  return result.rows as unknown as (ProficiencyHistory & { step_name: string; product_name: string })[];
 }
 
 // Calculate automatic proficiency adjustments based on performance
-export function calculateAutoAdjustments(): ProficiencyAdjustment[] {
+export async function calculateAutoAdjustments(): Promise<ProficiencyAdjustment[]> {
   const adjustments: ProficiencyAdjustment[] = [];
 
   // Get all worker-step pairs with completed entries in the last 30 days
-  const workerStepPairs = db.query(`
+  const pairsResult = await db.execute(`
     SELECT DISTINCT worker_id, product_step_id
     FROM schedule_entries
     WHERE status = 'completed'
@@ -242,11 +265,14 @@ export function calculateAutoAdjustments(): ProficiencyAdjustment[] {
     AND actual_start_time IS NOT NULL
     AND actual_end_time IS NOT NULL
     AND date >= date('now', '-30 days')
-  `).all() as { worker_id: number; product_step_id: number }[];
+  `);
+  
+  const workerStepPairs = pairsResult.rows as unknown as { worker_id: number; product_step_id: number }[];
 
   for (const pair of workerStepPairs) {
     // Get recent entries for this worker-step pair
-    const entries = db.query(`
+    const entriesResult = await db.execute({
+      sql: `
       SELECT
         se.actual_start_time,
         se.actual_end_time,
@@ -262,7 +288,11 @@ export function calculateAutoAdjustments(): ProficiencyAdjustment[] {
       AND se.date >= date('now', '-30 days')
       ORDER BY se.date DESC
       LIMIT 10
-    `).all(pair.worker_id, pair.product_step_id) as {
+    `,
+      args: [pair.worker_id, pair.product_step_id]
+    });
+    
+    const entries = entriesResult.rows as unknown as {
       actual_start_time: string;
       actual_end_time: string;
       actual_output: number;
@@ -288,9 +318,11 @@ export function calculateAutoAdjustments(): ProficiencyAdjustment[] {
     const avgEfficiency = totalEfficiency / entries.length;
 
     // Get current proficiency
-    const currentProf = db.query(
-      "SELECT level FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?"
-    ).get(pair.worker_id, pair.product_step_id) as { level: number } | null;
+    const profResult = await db.execute({
+      sql: "SELECT level FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?",
+      args: [pair.worker_id, pair.product_step_id]
+    });
+    const currentProf = profResult.rows[0] as unknown as { level: number } | undefined;
 
     const currentLevel = currentProf?.level ?? 3;
 
@@ -325,22 +357,24 @@ export function calculateAutoAdjustments(): ProficiencyAdjustment[] {
 }
 
 // Apply a proficiency adjustment
-export function applyProficiencyAdjustment(adjustment: ProficiencyAdjustment): void {
+export async function applyProficiencyAdjustment(adjustment: ProficiencyAdjustment): Promise<void> {
   // Check if proficiency record exists
-  const existing = db.query(
-    "SELECT id FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?"
-  ).get(adjustment.workerId, adjustment.productStepId) as { id: number } | null;
+  const existingResult = await db.execute({
+    sql: "SELECT id FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?",
+    args: [adjustment.workerId, adjustment.productStepId]
+  });
+  const existing = existingResult.rows[0] as unknown as { id: number } | undefined;
 
   if (existing) {
-    db.run(
-      "UPDATE worker_proficiencies SET level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [adjustment.newLevel, existing.id]
-    );
+    await db.execute({
+      sql: "UPDATE worker_proficiencies SET level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      args: [adjustment.newLevel, existing.id]
+    });
   } else {
-    db.run(
-      "INSERT INTO worker_proficiencies (worker_id, product_step_id, level) VALUES (?, ?, ?)",
-      [adjustment.workerId, adjustment.productStepId, adjustment.newLevel]
-    );
+    await db.execute({
+      sql: "INSERT INTO worker_proficiencies (worker_id, product_step_id, level) VALUES (?, ?, ?)",
+      args: [adjustment.workerId, adjustment.productStepId, adjustment.newLevel]
+    });
   }
 
   // Record in history
@@ -349,10 +383,10 @@ export function applyProficiencyAdjustment(adjustment: ProficiencyAdjustment): v
     sampleSize: adjustment.sampleSize,
   });
 
-  db.run(
-    `INSERT INTO proficiency_history (worker_id, product_step_id, old_level, new_level, reason, trigger_data)
+  await db.execute({
+    sql: `INSERT INTO proficiency_history (worker_id, product_step_id, old_level, new_level, reason, trigger_data)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [
+    args: [
       adjustment.workerId,
       adjustment.productStepId,
       adjustment.currentLevel,
@@ -360,7 +394,7 @@ export function applyProficiencyAdjustment(adjustment: ProficiencyAdjustment): v
       adjustment.reason,
       triggerData,
     ]
-  );
+  });
 }
 
 // Assignment Analytics Interfaces
@@ -402,8 +436,9 @@ export interface AssignmentAnalytics {
 }
 
 // Get assignment output history
-export function getAssignmentOutputHistory(assignmentId: number): AssignmentOutputHistoryEntry[] {
-  return db.query(`
+export async function getAssignmentOutputHistory(assignmentId: number): Promise<AssignmentOutputHistoryEntry[]> {
+  const result = await db.execute({
+    sql: `
     SELECT 
       aoh.id,
       aoh.output,
@@ -411,13 +446,17 @@ export function getAssignmentOutputHistory(assignmentId: number): AssignmentOutp
     FROM assignment_output_history aoh
     WHERE aoh.assignment_id = ?
     ORDER BY aoh.recorded_at ASC
-  `).all(assignmentId) as AssignmentOutputHistoryEntry[];
+  `,
+    args: [assignmentId]
+  });
+  return result.rows as unknown as AssignmentOutputHistoryEntry[];
 }
 
 // Calculate time-per-piece metrics for an assignment
-export function getAssignmentTimeMetrics(assignmentId: number): AssignmentTimeMetrics | null {
+export async function getAssignmentTimeMetrics(assignmentId: number): Promise<AssignmentTimeMetrics | null> {
   // Get assignment info
-  const assignment = db.query(`
+  const assignmentResult = await db.execute({
+    sql: `
     SELECT 
       twa.id,
       twa.actual_start_time,
@@ -429,19 +468,23 @@ export function getAssignmentTimeMetrics(assignmentId: number): AssignmentTimeMe
     JOIN schedule_entries se ON twa.schedule_entry_id = se.id
     JOIN product_steps ps ON se.product_step_id = ps.id
     WHERE twa.id = ?
-  `).get(assignmentId) as {
+  `,
+    args: [assignmentId]
+  });
+  
+  const assignment = assignmentResult.rows[0] as unknown as {
     id: number;
     actual_start_time: string | null;
     actual_end_time: string | null;
     actual_output: number;
     status: string;
     time_per_piece_seconds: number;
-  } | null;
+  } | undefined;
 
   if (!assignment) return null;
 
   // Get output history
-  const history = getAssignmentOutputHistory(assignmentId);
+  const history = await getAssignmentOutputHistory(assignmentId);
   
   if (history.length < 2) {
     // Not enough data for metrics
@@ -541,8 +584,9 @@ export function getAssignmentTimeMetrics(assignmentId: number): AssignmentTimeMe
 }
 
 // Get single assignment analytics
-export function getAssignmentAnalytics(assignmentId: number): AssignmentAnalytics | null {
-  const assignment = db.query(`
+export async function getAssignmentAnalytics(assignmentId: number): Promise<AssignmentAnalytics | null> {
+  const assignmentResult = await db.execute({
+    sql: `
     SELECT 
       twa.id as assignment_id,
       twa.schedule_entry_id,
@@ -561,7 +605,11 @@ export function getAssignmentAnalytics(assignmentId: number): AssignmentAnalytic
     JOIN schedule_entries se ON twa.schedule_entry_id = se.id
     JOIN product_steps ps ON se.product_step_id = ps.id
     WHERE twa.id = ?
-  `).get(assignmentId) as {
+  `,
+    args: [assignmentId]
+  });
+  
+  const assignment = assignmentResult.rows[0] as unknown as {
     assignment_id: number;
     schedule_entry_id: number;
     worker_id: number;
@@ -574,12 +622,12 @@ export function getAssignmentAnalytics(assignmentId: number): AssignmentAnalytic
     category: string;
     time_per_piece_seconds: number;
     planned_output: number;
-  } | null;
+  } | undefined;
 
   if (!assignment) return null;
 
-  const outputHistory = getAssignmentOutputHistory(assignment.assignment_id);
-  const timeMetrics = getAssignmentTimeMetrics(assignment.assignment_id);
+  const outputHistory = await getAssignmentOutputHistory(assignment.assignment_id);
+  const timeMetrics = await getAssignmentTimeMetrics(assignment.assignment_id);
 
   return {
     assignmentId: assignment.assignment_id,
@@ -600,8 +648,9 @@ export function getAssignmentAnalytics(assignmentId: number): AssignmentAnalytic
 }
 
 // Get all assignment analytics for a worker
-export function getWorkerAssignmentAnalytics(workerId: number): AssignmentAnalytics[] {
-  const assignments = db.query(`
+export async function getWorkerAssignmentAnalytics(workerId: number): Promise<AssignmentAnalytics[]> {
+  const assignmentsResult = await db.execute({
+    sql: `
     SELECT 
       twa.id as assignment_id,
       twa.schedule_entry_id,
@@ -623,7 +672,11 @@ export function getWorkerAssignmentAnalytics(workerId: number): AssignmentAnalyt
     AND twa.status IN ('in_progress', 'completed')
     ORDER BY twa.assigned_at DESC
     LIMIT 50
-  `).all(workerId) as {
+  `,
+    args: [workerId]
+  });
+  
+  const assignments = assignmentsResult.rows as unknown as {
     assignment_id: number;
     schedule_entry_id: number;
     worker_id: number;
@@ -638,11 +691,13 @@ export function getWorkerAssignmentAnalytics(workerId: number): AssignmentAnalyt
     planned_output: number;
   }[];
 
-  return assignments.map(assignment => {
-    const outputHistory = getAssignmentOutputHistory(assignment.assignment_id);
-    const timeMetrics = getAssignmentTimeMetrics(assignment.assignment_id);
+  const results: AssignmentAnalytics[] = [];
+  
+  for (const assignment of assignments) {
+    const outputHistory = await getAssignmentOutputHistory(assignment.assignment_id);
+    const timeMetrics = await getAssignmentTimeMetrics(assignment.assignment_id);
 
-    return {
+    results.push({
       assignmentId: assignment.assignment_id,
       scheduleEntryId: assignment.schedule_entry_id,
       workerId: assignment.worker_id,
@@ -657,6 +712,8 @@ export function getWorkerAssignmentAnalytics(workerId: number): AssignmentAnalyt
       status: assignment.status,
       outputHistory,
       timeMetrics,
-    };
-  });
+    });
+  }
+  
+  return results;
 }

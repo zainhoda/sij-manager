@@ -1,13 +1,18 @@
-import { Database } from "bun:sqlite";
+import { createClient, type Client } from "@libsql/client";
 
-export function initDatabase(dbPath: string = "sij.db"): Database {
-  const db = new Database(dbPath);
+export function initDatabase(url: string = process.env.TURSO_DATABASE_URL || "file:sij.db", authToken?: string): Client {
+  return createClient({
+    url,
+    authToken: authToken || process.env.TURSO_AUTH_TOKEN,
+  });
+}
 
+export async function ensureSchema(db: Client) {
   // Enable foreign keys
-  db.run("PRAGMA foreign_keys = ON");
+  await db.execute("PRAGMA foreign_keys = ON");
 
   // Products table
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -17,7 +22,7 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   `);
 
   // Equipment table
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS equipment (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE,
@@ -28,7 +33,7 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   `);
 
   // Workers table (human resources)
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS workers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -40,7 +45,7 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   `);
 
   // Equipment certifications (worker-equipment junction table)
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS equipment_certifications (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       worker_id INTEGER NOT NULL,
@@ -54,7 +59,7 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   `);
 
   // Product steps table
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS product_steps (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       product_id INTEGER NOT NULL,
@@ -71,7 +76,7 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   `);
 
   // Step dependencies (many-to-many)
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS step_dependencies (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       step_id INTEGER NOT NULL,
@@ -83,7 +88,7 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   `);
 
   // Orders table
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       product_id INTEGER NOT NULL,
@@ -97,7 +102,7 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   `);
 
   // Worker proficiencies per step (1-5 scale)
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS worker_proficiencies (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       worker_id INTEGER NOT NULL,
@@ -112,7 +117,7 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   `);
 
   // Proficiency change history for analytics
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS proficiency_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       worker_id INTEGER NOT NULL,
@@ -128,7 +133,7 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   `);
 
   // What-if scheduling scenarios
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS scheduling_scenarios (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -140,7 +145,7 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   `);
 
   // Scenario schedule results
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS scenario_schedules (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       scenario_id INTEGER NOT NULL,
@@ -155,7 +160,7 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   `);
 
   // Schedules table
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS schedules (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       order_id INTEGER NOT NULL,
@@ -168,7 +173,7 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   // Schedule entries table
   // Note: worker_id, actual_start_time, actual_end_time, actual_output, status, notes
   // are deprecated - use task_worker_assignments instead for per-worker tracking
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS schedule_entries (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       schedule_id INTEGER NOT NULL,
@@ -190,7 +195,7 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   `);
 
   // Task worker assignments (multi-worker per task with per-worker time tracking)
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS task_worker_assignments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       schedule_entry_id INTEGER NOT NULL,
@@ -209,7 +214,7 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
 
   // Assignment output history (non-destructive tracking of output updates)
   // This allows tracking how output changes over time to calculate average time per piece
-  db.run(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS assignment_output_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       assignment_id INTEGER NOT NULL,
@@ -220,27 +225,25 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   `);
 
   // Create indexes for common queries
-  db.run("CREATE INDEX IF NOT EXISTS idx_product_steps_product ON product_steps(product_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_product_steps_equipment ON product_steps(equipment_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_orders_product ON orders(product_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_schedules_order ON schedules(order_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_schedule_entries_schedule ON schedule_entries(schedule_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_schedule_entries_date ON schedule_entries(date)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_schedule_entries_worker ON schedule_entries(worker_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_workers_status ON workers(status)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_equipment_certifications_worker ON equipment_certifications(worker_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_equipment_certifications_equipment ON equipment_certifications(equipment_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_worker_proficiencies_worker ON worker_proficiencies(worker_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_worker_proficiencies_step ON worker_proficiencies(product_step_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_proficiency_history_worker ON proficiency_history(worker_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_proficiency_history_step ON proficiency_history(product_step_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_scenario_schedules_scenario ON scenario_schedules(scenario_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_task_worker_assignments_entry ON task_worker_assignments(schedule_entry_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_task_worker_assignments_worker ON task_worker_assignments(worker_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_assignment_output_history_assignment ON assignment_output_history(assignment_id)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_assignment_output_history_recorded ON assignment_output_history(recorded_at)");
-
-  return db;
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_product_steps_product ON product_steps(product_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_product_steps_equipment ON product_steps(equipment_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_product ON orders(product_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_schedules_order ON schedules(order_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_schedule_entries_schedule ON schedule_entries(schedule_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_schedule_entries_date ON schedule_entries(date)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_schedule_entries_worker ON schedule_entries(worker_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_workers_status ON workers(status)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_equipment_certifications_worker ON equipment_certifications(worker_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_equipment_certifications_equipment ON equipment_certifications(equipment_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_worker_proficiencies_worker ON worker_proficiencies(worker_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_worker_proficiencies_step ON worker_proficiencies(product_step_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_proficiency_history_worker ON proficiency_history(worker_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_proficiency_history_step ON proficiency_history(product_step_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_scenario_schedules_scenario ON scenario_schedules(scenario_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_task_worker_assignments_entry ON task_worker_assignments(schedule_entry_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_task_worker_assignments_worker ON task_worker_assignments(worker_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_assignment_output_history_assignment ON assignment_output_history(assignment_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_assignment_output_history_recorded ON assignment_output_history(recorded_at)");
 }
 
 // Type definitions for database rows

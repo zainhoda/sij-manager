@@ -17,7 +17,7 @@ export async function handleAnalytics(request: Request): Promise<Response | null
   const productivityMatch = url.pathname.match(/^\/api\/analytics\/workers\/(\d+)\/productivity$/);
   if (productivityMatch && request.method === "GET") {
     const workerId = parseInt(productivityMatch[1]!);
-    const productivity = getWorkerProductivity(workerId);
+    const productivity = await getWorkerProductivity(workerId);
 
     if (!productivity) {
       return Response.json({ error: "Worker not found" }, { status: 404 });
@@ -33,7 +33,7 @@ export async function handleAnalytics(request: Request): Promise<Response | null
     const daysParam = url.searchParams.get("days");
     const days = daysParam ? parseInt(daysParam) : 30;
 
-    const history = getWorkerProductivityHistory(workerId, days);
+    const history = await getWorkerProductivityHistory(workerId, days);
     return Response.json(history);
   }
 
@@ -41,23 +41,23 @@ export async function handleAnalytics(request: Request): Promise<Response | null
   const profHistoryMatch = url.pathname.match(/^\/api\/analytics\/workers\/(\d+)\/proficiency-history$/);
   if (profHistoryMatch && request.method === "GET") {
     const workerId = parseInt(profHistoryMatch[1]!);
-    const history = getWorkerProficiencyHistory(workerId);
+    const history = await getWorkerProficiencyHistory(workerId);
     return Response.json(history);
   }
 
   // GET /api/analytics/pending-adjustments - Get pending proficiency adjustments
   if (url.pathname === "/api/analytics/pending-adjustments" && request.method === "GET") {
-    const adjustments = calculateAutoAdjustments();
+    const adjustments = await calculateAutoAdjustments();
     return Response.json(adjustments);
   }
 
   // POST /api/analytics/recalculate-proficiencies - Trigger auto-adjustment batch
   if (url.pathname === "/api/analytics/recalculate-proficiencies" && request.method === "POST") {
-    const adjustments = calculateAutoAdjustments();
+    const adjustments = await calculateAutoAdjustments();
 
     // Apply all adjustments
     for (const adjustment of adjustments) {
-      applyProficiencyAdjustment(adjustment);
+      await applyProficiencyAdjustment(adjustment);
     }
 
     return Response.json({
@@ -70,7 +70,7 @@ export async function handleAnalytics(request: Request): Promise<Response | null
   const assignmentHistoryMatch = url.pathname.match(/^\/api\/analytics\/assignments\/(\d+)\/output-history$/);
   if (assignmentHistoryMatch && request.method === "GET") {
     const assignmentId = parseInt(assignmentHistoryMatch[1]!);
-    const history = getAssignmentOutputHistory(assignmentId);
+    const history = await getAssignmentOutputHistory(assignmentId);
     return Response.json(history);
   }
 
@@ -78,7 +78,7 @@ export async function handleAnalytics(request: Request): Promise<Response | null
   const assignmentMetricsMatch = url.pathname.match(/^\/api\/analytics\/assignments\/(\d+)\/metrics$/);
   if (assignmentMetricsMatch && request.method === "GET") {
     const assignmentId = parseInt(assignmentMetricsMatch[1]!);
-    const metrics = getAssignmentTimeMetrics(assignmentId);
+    const metrics = await getAssignmentTimeMetrics(assignmentId);
     
     if (!metrics) {
       return Response.json({ error: "Assignment not found" }, { status: 404 });
@@ -91,7 +91,7 @@ export async function handleAnalytics(request: Request): Promise<Response | null
   const assignmentAnalyticsMatch = url.pathname.match(/^\/api\/analytics\/assignments\/(\d+)$/);
   if (assignmentAnalyticsMatch && request.method === "GET") {
     const assignmentId = parseInt(assignmentAnalyticsMatch[1]!);
-    const analytics = getAssignmentAnalytics(assignmentId);
+    const analytics = await getAssignmentAnalytics(assignmentId);
     
     if (!analytics) {
       return Response.json({ error: "Assignment not found" }, { status: 404 });
@@ -104,7 +104,7 @@ export async function handleAnalytics(request: Request): Promise<Response | null
   const workerAssignmentsMatch = url.pathname.match(/^\/api\/analytics\/workers\/(\d+)\/assignments$/);
   if (workerAssignmentsMatch && request.method === "GET") {
     const workerId = parseInt(workerAssignmentsMatch[1]!);
-    const analytics = getWorkerAssignmentAnalytics(workerId);
+    const analytics = await getWorkerAssignmentAnalytics(workerId);
     return Response.json(analytics);
   }
 

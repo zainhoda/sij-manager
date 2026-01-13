@@ -42,19 +42,23 @@ interface WorkerAssignment {
 }
 
 // Find qualified workers for a schedule entry (returns multiple workers sorted by score)
-export function findQualifiedWorkers(
+export async function findQualifiedWorkers(
   step: StepWithDependencies,
   date: string,
   startTime: string,
   endTime: string,
   maxWorkers: number = MULTI_WORKER_CONFIG.maxWorkersPerTask
-): WorkerAssignment[] {
+): Promise<WorkerAssignment[]> {
   // Get all active workers with matching skill category
-  const candidateWorkers = db.query(`
+  const candidateWorkersResult = await db.execute({
+    sql: `
     SELECT * FROM workers
     WHERE status = 'active'
     AND skill_category = ?
-  `).all(step.required_skill_category) as Worker[];
+  `,
+    args: [step.required_skill_category]
+  });
+  const candidateWorkers = candidateWorkersResult.rows as unknown as Worker[];
 
   if (candidateWorkers.length === 0) {
     return [];
@@ -63,14 +67,21 @@ export function findQualifiedWorkers(
   // If step requires equipment, filter to workers certified for it
   let qualifiedWorkers = candidateWorkers;
   if (step.equipment_id) {
-    qualifiedWorkers = candidateWorkers.filter(worker => {
-      const certification = db.query(`
+    const filteredWorkers: Worker[] = [];
+    for (const worker of candidateWorkers) {
+      const certificationResult = await db.execute({
+        sql: `
         SELECT id FROM equipment_certifications
         WHERE worker_id = ? AND equipment_id = ?
         AND (expires_at IS NULL OR expires_at > datetime('now'))
-      `).get(worker.id, step.equipment_id);
-      return certification !== null;
-    });
+      `,
+        args: [worker.id, step.equipment_id]
+      });
+      if (certificationResult.rows.length > 0) {
+        filteredWorkers.push(worker);
+      }
+    }
+    qualifiedWorkers = filteredWorkers;
 
     if (qualifiedWorkers.length === 0) {
       return [];
@@ -79,50 +90,69 @@ export function findQualifiedWorkers(
 
   // Filter to workers available during the time slot
   // Check both legacy schedule_entries.worker_id and new task_worker_assignments
-  const availableWorkers = qualifiedWorkers.filter(worker => {
+  const availableWorkers: Worker[] = [];
+  for (const worker of qualifiedWorkers) {
     // Check legacy schedule_entries overlap
-    const legacyOverlap = db.query(`
+    const legacyOverlapResult = await db.execute({
+      sql: `
       SELECT id FROM schedule_entries
       WHERE worker_id = ?
       AND date = ?
       AND NOT (end_time <= ? OR start_time >= ?)
-    `).get(worker.id, date, startTime, endTime);
+    `,
+      args: [worker.id, date, startTime, endTime]
+    });
+    const legacyOverlap = legacyOverlapResult.rows[0];
 
     // Check new task_worker_assignments overlap
-    const assignmentOverlap = db.query(`
+    const assignmentOverlapResult = await db.execute({
+      sql: `
       SELECT twa.id FROM task_worker_assignments twa
       JOIN schedule_entries se ON twa.schedule_entry_id = se.id
       WHERE twa.worker_id = ?
       AND se.date = ?
       AND NOT (se.end_time <= ? OR se.start_time >= ?)
-    `).get(worker.id, date, startTime, endTime);
+    `,
+      args: [worker.id, date, startTime, endTime]
+    });
+    const assignmentOverlap = assignmentOverlapResult.rows[0];
 
-    return legacyOverlap === null && assignmentOverlap === null;
-  });
+    if (!legacyOverlap && !assignmentOverlap) {
+      availableWorkers.push(worker);
+    }
+  }
 
   if (availableWorkers.length === 0) {
     return [];
   }
 
   // Score remaining candidates by proficiency (higher is better) and workload (lower is better)
-  const scoredWorkers = availableWorkers.map(worker => {
+  const scoredWorkers = await Promise.all(availableWorkers.map(async worker => {
     // Count legacy assignments
-    const legacyWorkload = db.query(`
+    const legacyWorkloadResult = await db.execute({
+      sql: `
       SELECT COUNT(*) as count FROM schedule_entries
       WHERE worker_id = ? AND date = ?
-    `).get(worker.id, date) as { count: number };
+    `,
+      args: [worker.id, date]
+    });
+    const legacyWorkload = legacyWorkloadResult.rows[0] as unknown as { count: number };
 
     // Count new assignments
-    const newWorkload = db.query(`
+    const newWorkloadResult = await db.execute({
+      sql: `
       SELECT COUNT(*) as count FROM task_worker_assignments twa
       JOIN schedule_entries se ON twa.schedule_entry_id = se.id
       WHERE twa.worker_id = ? AND se.date = ?
-    `).get(worker.id, date) as { count: number };
+    `,
+      args: [worker.id, date]
+    });
+    const newWorkload = newWorkloadResult.rows[0] as unknown as { count: number };
 
     const totalWorkload = legacyWorkload.count + newWorkload.count;
 
     // Get proficiency level for this worker-step combination
-    const proficiencyLevel = getWorkerProficiencyLevel(worker.id, step.id);
+    const proficiencyLevel = await getWorkerProficiencyLevel(worker.id, step.id);
 
     // Score: higher proficiency is better, lower workload is better
     // Proficiency weight: 10 points per level (so level 5 = 50, level 1 = 10)
@@ -135,7 +165,7 @@ export function findQualifiedWorkers(
       score,
       proficiencyLevel,
     };
-  });
+  }));
 
   // Sort by score (highest first for best candidates)
   scoredWorkers.sort((a, b) => b.score - a.score);
@@ -145,13 +175,13 @@ export function findQualifiedWorkers(
 }
 
 // Legacy function for backwards compatibility - returns single best worker
-export function findQualifiedWorker(
+export async function findQualifiedWorker(
   step: StepWithDependencies,
   date: string,
   startTime: string,
   endTime: string
-): { workerId: number; workerName: string } | null {
-  const workers = findQualifiedWorkers(step, date, startTime, endTime, 1);
+): Promise<{ workerId: number; workerName: string } | null> {
+  const workers = await findQualifiedWorkers(step, date, startTime, endTime, 1);
   return workers.length > 0 ? { workerId: workers[0]!.workerId, workerName: workers[0]!.workerName } : null;
 }
 
@@ -271,9 +301,13 @@ function dependenciesComplete(
   return true;
 }
 
-export function generateSchedule(orderId: number): Schedule | null {
+export async function generateSchedule(orderId: number): Promise<Schedule | null> {
   // Get order
-  const order = db.query("SELECT * FROM orders WHERE id = ?").get(orderId) as Order | null;
+  const orderResult = await db.execute({
+    sql: "SELECT * FROM orders WHERE id = ?",
+    args: [orderId]
+  });
+  const order = orderResult.rows[0] as unknown as Order | undefined;
   if (!order) return null;
 
   // Calculate days until deadline
@@ -282,18 +316,26 @@ export function generateSchedule(orderId: number): Schedule | null {
   const daysUntilDeadline = Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 
   // Get product steps with dependencies
-  const steps = db.query(`
+  const stepsResult = await db.execute({
+    sql: `
     SELECT * FROM product_steps
     WHERE product_id = ?
     ORDER BY sequence
-  `).all(order.product_id) as ProductStep[];
+  `,
+    args: [order.product_id]
+  });
+  const steps = stepsResult.rows as unknown as ProductStep[];
 
   // Build steps map with dependencies
   const stepsMap = new Map<number, StepWithDependencies>();
   for (const step of steps) {
-    const deps = db.query(`
+    const depsResult = await db.execute({
+      sql: `
       SELECT depends_on_step_id FROM step_dependencies WHERE step_id = ?
-    `).all(step.id) as { depends_on_step_id: number }[];
+    `,
+      args: [step.id]
+    });
+    const deps = depsResult.rows as unknown as { depends_on_step_id: number }[];
 
     stepsMap.set(step.id, {
       ...step,
@@ -313,10 +355,10 @@ export function generateSchedule(orderId: number): Schedule | null {
   const weekStartStr = weekStart.toISOString().split("T")[0]!;
 
   // Create schedule record
-  const scheduleResult = db.run(
-    "INSERT INTO schedules (order_id, week_start_date) VALUES (?, ?)",
-    [orderId, weekStartStr]
-  );
+  const scheduleResult = await db.execute({
+    sql: "INSERT INTO schedules (order_id, week_start_date) VALUES (?, ?)",
+    args: [orderId, weekStartStr]
+  });
   const scheduleId = Number(scheduleResult.lastInsertRowid);
 
   // Track completed steps and their completion dates
@@ -380,13 +422,13 @@ export function generateSchedule(orderId: number): Schedule | null {
         // Find qualified workers for this time slot
         const startTimeStr = minutesToTime(currentTimeMinutes);
         const endTimeStr = minutesToTime(endTimeMinutes);
-        const qualifiedWorkers = findQualifiedWorkers(step, dateStr, startTimeStr, endTimeStr, workersNeeded);
+        const qualifiedWorkers = await findQualifiedWorkers(step, dateStr, startTimeStr, endTimeStr, workersNeeded);
 
         // Create schedule entry (without worker_id - using new assignments table)
-        const entryResult = db.run(
-          `INSERT INTO schedule_entries (schedule_id, product_step_id, date, start_time, end_time, planned_output)
+        const entryResult = await db.execute({
+          sql: `INSERT INTO schedule_entries (schedule_id, product_step_id, date, start_time, end_time, planned_output)
            VALUES (?, ?, ?, ?, ?, ?)`,
-          [
+          args: [
             scheduleId,
             stepId,
             dateStr,
@@ -394,15 +436,15 @@ export function generateSchedule(orderId: number): Schedule | null {
             endTimeStr,
             outputInBlock,
           ]
-        );
+        });
         const entryId = Number(entryResult.lastInsertRowid);
 
         // Create worker assignments
         for (const worker of qualifiedWorkers) {
-          db.run(
-            "INSERT INTO task_worker_assignments (schedule_entry_id, worker_id) VALUES (?, ?)",
-            [entryId, worker.workerId]
-          );
+          await db.execute({
+            sql: "INSERT INTO task_worker_assignments (schedule_entry_id, worker_id) VALUES (?, ?)",
+            args: [entryId, worker.workerId]
+          });
         }
 
         remainingMinutes -= minutesToUse;
@@ -438,14 +480,22 @@ export function generateSchedule(orderId: number): Schedule | null {
   }
 
   // Update order status
-  db.run("UPDATE orders SET status = 'scheduled' WHERE id = ?", [orderId]);
+  await db.execute({
+    sql: "UPDATE orders SET status = 'scheduled' WHERE id = ?",
+    args: [orderId]
+  });
 
-  return db.query("SELECT * FROM schedules WHERE id = ?").get(scheduleId) as Schedule;
+  const finalScheduleResult = await db.execute({
+    sql: "SELECT * FROM schedules WHERE id = ?",
+    args: [scheduleId]
+  });
+  return finalScheduleResult.rows[0] as unknown as Schedule;
 }
 
 // Helper to get assignments for an entry
-function getAssignmentsForEntry(entryId: number) {
-  return db.query(`
+async function getAssignmentsForEntry(entryId: number) {
+  const result = await db.execute({
+    sql: `
     SELECT
       twa.*,
       w.name as worker_name
@@ -453,7 +503,10 @@ function getAssignmentsForEntry(entryId: number) {
     JOIN workers w ON twa.worker_id = w.id
     WHERE twa.schedule_entry_id = ?
     ORDER BY twa.assigned_at
-  `).all(entryId) as (TaskWorkerAssignment & { worker_name: string })[];
+  `,
+    args: [entryId]
+  });
+  return result.rows as unknown as (TaskWorkerAssignment & { worker_name: string })[];
 }
 
 // Helper to compute task status from assignments
@@ -476,16 +529,21 @@ function computeTaskStatus(assignments: { status: string }[]): 'not_started' | '
 }
 
 // Get schedule with all entries and assignments
-export function getScheduleWithEntries(scheduleId: number) {
-  const schedule = db.query(`
+export async function getScheduleWithEntries(scheduleId: number) {
+  const scheduleResult = await db.execute({
+    sql: `
     SELECT s.*, o.color as order_color
     FROM schedules s
     JOIN orders o ON s.order_id = o.id
     WHERE s.id = ?
-  `).get(scheduleId) as (Schedule & { order_color: string | null }) | null;
+  `,
+    args: [scheduleId]
+  });
+  const schedule = scheduleResult.rows[0] as unknown as (Schedule & { order_color: string | null }) | undefined;
   if (!schedule) return null;
 
-  const entries = db.query(`
+  const entriesResult = await db.execute({
+    sql: `
     SELECT
       se.*,
       ps.name as step_name,
@@ -501,7 +559,10 @@ export function getScheduleWithEntries(scheduleId: number) {
     JOIN orders o ON s.order_id = o.id
     WHERE se.schedule_id = ?
     ORDER BY se.date, se.start_time
-  `).all(scheduleId) as (ScheduleEntry & {
+  `,
+    args: [scheduleId]
+  });
+  const entries = entriesResult.rows as unknown as (ScheduleEntry & {
     step_name: string;
     category: string;
     required_skill_category: string;
@@ -511,8 +572,8 @@ export function getScheduleWithEntries(scheduleId: number) {
   })[];
 
   // Enrich entries with assignments
-  const enrichedEntries = entries.map(entry => {
-    const assignments = getAssignmentsForEntry(entry.id);
+  const enrichedEntries = await Promise.all(entries.map(async entry => {
+    const assignments = await getAssignmentsForEntry(entry.id);
     const totalActualOutput = assignments.reduce((sum, a) => sum + a.actual_output, 0);
 
     return {
@@ -525,7 +586,7 @@ export function getScheduleWithEntries(scheduleId: number) {
         ? assignments.map(a => a.worker_name).join(', ')
         : null,
     };
-  });
+  }));
 
   // Group entries by date
   const entriesByDate: Record<string, typeof enrichedEntries> = {};

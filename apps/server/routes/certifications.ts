@@ -6,13 +6,14 @@ export async function handleCertifications(request: Request): Promise<Response |
 
   // GET /api/certifications - list all certifications
   if (url.pathname === "/api/certifications" && request.method === "GET") {
-    const certifications = db.query(`
+    const result = await db.execute(`
       SELECT ec.*, w.name as worker_name, e.name as equipment_name
       FROM equipment_certifications ec
       JOIN workers w ON ec.worker_id = w.id
       JOIN equipment e ON ec.equipment_id = e.id
       ORDER BY w.name, e.name
-    `).all();
+    `);
+    const certifications = result.rows;
     return Response.json(certifications);
   }
 
@@ -46,37 +47,54 @@ async function handleGrantCertification(request: Request): Promise<Response> {
     }
 
     // Verify worker exists
-    const worker = db.query("SELECT id FROM workers WHERE id = ?").get(body.worker_id) as Worker | null;
+    const workerResult = await db.execute({
+      sql: "SELECT id FROM workers WHERE id = ?",
+      args: [body.worker_id]
+    });
+    const worker = workerResult.rows[0] as unknown as Worker | undefined;
+    
     if (!worker) {
       return Response.json({ error: "Worker not found" }, { status: 404 });
     }
 
     // Verify equipment exists
-    const equipment = db.query("SELECT id FROM equipment WHERE id = ?").get(body.equipment_id) as Equipment | null;
+    const equipmentResult = await db.execute({
+      sql: "SELECT id FROM equipment WHERE id = ?",
+      args: [body.equipment_id]
+    });
+    const equipment = equipmentResult.rows[0] as unknown as Equipment | undefined;
+    
     if (!equipment) {
       return Response.json({ error: "Equipment not found" }, { status: 404 });
     }
 
     // Check if certification already exists
-    const existing = db.query(
-      "SELECT id FROM equipment_certifications WHERE worker_id = ? AND equipment_id = ?"
-    ).get(body.worker_id, body.equipment_id);
+    const existingResult = await db.execute({
+      sql: "SELECT id FROM equipment_certifications WHERE worker_id = ? AND equipment_id = ?",
+      args: [body.worker_id, body.equipment_id]
+    });
+    const existing = existingResult.rows[0];
+    
     if (existing) {
       return Response.json({ error: "Worker already has this certification" }, { status: 409 });
     }
 
-    const result = db.run(
-      "INSERT INTO equipment_certifications (worker_id, equipment_id, expires_at) VALUES (?, ?, ?)",
-      [body.worker_id, body.equipment_id, body.expires_at || null]
-    );
+    const result = await db.execute({
+      sql: "INSERT INTO equipment_certifications (worker_id, equipment_id, expires_at) VALUES (?, ?, ?)",
+      args: [body.worker_id, body.equipment_id, body.expires_at || null]
+    });
 
-    const certification = db.query(`
+    const certResult = await db.execute({
+      sql: `
       SELECT ec.*, w.name as worker_name, e.name as equipment_name
       FROM equipment_certifications ec
       JOIN workers w ON ec.worker_id = w.id
       JOIN equipment e ON ec.equipment_id = e.id
       WHERE ec.id = ?
-    `).get(result.lastInsertRowid);
+    `,
+      args: [result.lastInsertRowid]
+    });
+    const certification = certResult.rows[0];
 
     return Response.json(certification, { status: 201 });
   } catch {
@@ -84,15 +102,20 @@ async function handleGrantCertification(request: Request): Promise<Response> {
   }
 }
 
-function handleRevokeCertification(certificationId: number): Response {
-  const certification = db.query(
-    "SELECT * FROM equipment_certifications WHERE id = ?"
-  ).get(certificationId) as EquipmentCertification | null;
+async function handleRevokeCertification(certificationId: number): Promise<Response> {
+  const certResult = await db.execute({
+    sql: "SELECT * FROM equipment_certifications WHERE id = ?",
+    args: [certificationId]
+  });
+  const certification = certResult.rows[0] as unknown as EquipmentCertification | undefined;
 
   if (!certification) {
     return Response.json({ error: "Certification not found" }, { status: 404 });
   }
 
-  db.run("DELETE FROM equipment_certifications WHERE id = ?", [certificationId]);
+  await db.execute({
+    sql: "DELETE FROM equipment_certifications WHERE id = ?",
+    args: [certificationId]
+  });
   return Response.json({ success: true });
 }

@@ -1,6 +1,5 @@
 import { db } from "../db";
 import type { Order, Product } from "../db/schema";
-import type { SQLQueryBindings } from "bun:sqlite";
 
 // Color palette for distinguishing orders
 const ORDER_COLORS = [
@@ -14,10 +13,9 @@ const ORDER_COLORS = [
   '#84CC16', // lime
 ];
 
-function getNextOrderColor(): string {
-  const usedColors = db.query(
-    "SELECT DISTINCT color FROM orders WHERE color IS NOT NULL"
-  ).all() as { color: string }[];
+async function getNextOrderColor(): Promise<string> {
+  const result = await db.execute("SELECT DISTINCT color FROM orders WHERE color IS NOT NULL");
+  const usedColors = result.rows as unknown as { color: string }[];
   const usedSet = new Set(usedColors.map(c => c.color));
 
   // Find first unused color
@@ -27,13 +25,14 @@ function getNextOrderColor(): string {
   }
 
   // All colors used, cycle through based on count
-  const colorCounts = db.query(`
+  const countResult = await db.execute(`
     SELECT color, COUNT(*) as count
     FROM orders
     WHERE color IS NOT NULL
     GROUP BY color
     ORDER BY count ASC
-  `).all() as { color: string; count: number }[];
+  `);
+  const colorCounts = countResult.rows as unknown as { color: string; count: number }[];
 
   // Return the least used color, or random if all equal
   if (colorCounts.length > 0) {
@@ -48,12 +47,13 @@ export async function handleOrders(request: Request): Promise<Response | null> {
 
   // GET /api/orders - list all orders
   if (url.pathname === "/api/orders" && request.method === "GET") {
-    const orders = db.query(`
+    const result = await db.execute(`
       SELECT o.*, p.name as product_name
       FROM orders o
       JOIN products p ON o.product_id = p.id
       ORDER BY o.due_date
-    `).all() as (Order & { product_name: string })[];
+    `);
+    const orders = result.rows;
     return Response.json(orders);
   }
 
@@ -66,12 +66,16 @@ export async function handleOrders(request: Request): Promise<Response | null> {
   const orderMatch = url.pathname.match(/^\/api\/orders\/(\d+)$/);
   if (orderMatch && request.method === "GET") {
     const orderId = parseInt(orderMatch[1]!);
-    const order = db.query(`
+    const result = await db.execute({
+      sql: `
       SELECT o.*, p.name as product_name
       FROM orders o
       JOIN products p ON o.product_id = p.id
       WHERE o.id = ?
-    `).get(orderId) as (Order & { product_name: string }) | null;
+    `,
+      args: [orderId]
+    });
+    const order = result.rows[0];
 
     if (!order) {
       return Response.json({ error: "Order not found" }, { status: 404 });
@@ -99,20 +103,28 @@ async function handleCreateOrder(request: Request): Promise<Response> {
     }
 
     // Verify product exists
-    const product = db.query("SELECT id FROM products WHERE id = ?").get(body.product_id) as Product | null;
+    const productResult = await db.execute({
+      sql: "SELECT id FROM products WHERE id = ?",
+      args: [body.product_id]
+    });
+    const product = productResult.rows[0];
     if (!product) {
       return Response.json({ error: "Product not found" }, { status: 404 });
     }
 
     // Auto-assign a color for visual distinction
-    const color = getNextOrderColor();
+    const color = await getNextOrderColor();
 
-    const result = db.run(
-      "INSERT INTO orders (product_id, quantity, due_date, color) VALUES (?, ?, ?, ?)",
-      [body.product_id, body.quantity, body.due_date, color]
-    );
+    const result = await db.execute({
+      sql: "INSERT INTO orders (product_id, quantity, due_date, color) VALUES (?, ?, ?, ?)",
+      args: [body.product_id, body.quantity, body.due_date, color]
+    });
 
-    const order = db.query("SELECT * FROM orders WHERE id = ?").get(result.lastInsertRowid) as Order;
+    const newOrderResult = await db.execute({
+      sql: "SELECT * FROM orders WHERE id = ?",
+      args: [result.lastInsertRowid]
+    });
+    const order = newOrderResult.rows[0];
     return Response.json(order, { status: 201 });
   } catch {
     return Response.json({ error: "Invalid request body" }, { status: 400 });
@@ -124,7 +136,7 @@ async function handleUpdateOrder(request: Request, orderId: number): Promise<Res
     const body = await request.json() as { status?: string };
 
     const updates: string[] = [];
-    const values: SQLQueryBindings[] = [];
+    const values: any[] = [];
 
     if (body.status) {
       if (!['pending', 'scheduled', 'in_progress', 'completed'].includes(body.status)) {
@@ -139,9 +151,17 @@ async function handleUpdateOrder(request: Request, orderId: number): Promise<Res
     }
 
     values.push(orderId);
-    db.run(`UPDATE orders SET ${updates.join(", ")} WHERE id = ?`, values);
+    await db.execute({
+      sql: `UPDATE orders SET ${updates.join(", ")} WHERE id = ?`,
+      args: values
+    });
 
-    const order = db.query("SELECT * FROM orders WHERE id = ?").get(orderId) as Order | null;
+    const orderResult = await db.execute({
+      sql: "SELECT * FROM orders WHERE id = ?",
+      args: [orderId]
+    });
+    const order = orderResult.rows[0] as unknown as Order | undefined;
+    
     if (!order) {
       return Response.json({ error: "Order not found" }, { status: 404 });
     }

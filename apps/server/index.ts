@@ -59,7 +59,7 @@ const server = Bun.serve({
       // Route handlers
       let response: Response | null = null;
 
-      response = handleProducts(request);
+      response = await handleProducts(request);
       if (response) {
         return addCorsHeaders(response);
       }

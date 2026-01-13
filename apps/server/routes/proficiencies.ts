@@ -1,6 +1,5 @@
 import { db } from "../db";
 import type { WorkerProficiency, ProductStep } from "../db/schema";
-import type { SQLQueryBindings } from "bun:sqlite";
 
 interface ProficiencyWithStep extends WorkerProficiency {
   step_name: string;
@@ -20,13 +19,14 @@ export async function handleProficiencies(request: Request): Promise<Response | 
 
   // GET /api/proficiencies - list all proficiencies (admin view)
   if (url.pathname === "/api/proficiencies" && request.method === "GET") {
-    const proficiencies = db.query(`
+    const result = await db.execute(`
       SELECT wp.*, ps.name as step_name, ps.category, p.name as product_name
       FROM worker_proficiencies wp
       JOIN product_steps ps ON wp.product_step_id = ps.id
       JOIN products p ON ps.product_id = p.id
       ORDER BY wp.worker_id, p.name, ps.sequence
-    `).all() as ProficiencyWithStep[];
+    `);
+    const proficiencies = result.rows as unknown as ProficiencyWithStep[];
     return Response.json(proficiencies);
   }
 
@@ -49,15 +49,20 @@ export async function handleProficiencies(request: Request): Promise<Response | 
   return null;
 }
 
-function getWorkerProficiencies(workerId: number): Response {
+async function getWorkerProficiencies(workerId: number): Promise<Response> {
   // Check if worker exists
-  const worker = db.query("SELECT id FROM workers WHERE id = ?").get(workerId);
+  const workerResult = await db.execute({
+    sql: "SELECT id FROM workers WHERE id = ?",
+    args: [workerId]
+  });
+  const worker = workerResult.rows[0];
   if (!worker) {
     return Response.json({ error: "Worker not found" }, { status: 404 });
   }
 
   // Get all product steps with their proficiency levels (or default 3)
-  const proficiencies = db.query(`
+  const profResult = await db.execute({
+    sql: `
     SELECT
       ps.id as product_step_id,
       ps.name as step_name,
@@ -73,7 +78,11 @@ function getWorkerProficiencies(workerId: number): Response {
     JOIN products p ON ps.product_id = p.id
     LEFT JOIN worker_proficiencies wp ON wp.product_step_id = ps.id AND wp.worker_id = ?
     ORDER BY p.name, ps.sequence
-  `).all(workerId) as {
+  `,
+    args: [workerId]
+  });
+  
+  const proficiencies = profResult.rows as unknown as {
     product_step_id: number;
     step_name: string;
     category: string;
@@ -134,64 +143,78 @@ async function handleCreateOrUpdateProficiency(request: Request): Promise<Respon
     }
 
     // Verify worker exists
-    const worker = db.query("SELECT id FROM workers WHERE id = ?").get(body.worker_id);
+    const workerResult = await db.execute({
+      sql: "SELECT id FROM workers WHERE id = ?",
+      args: [body.worker_id]
+    });
+    const worker = workerResult.rows[0];
     if (!worker) {
       return Response.json({ error: "Worker not found" }, { status: 404 });
     }
 
     // Verify product step exists
-    const step = db.query("SELECT id FROM product_steps WHERE id = ?").get(body.product_step_id);
+    const stepResult = await db.execute({
+      sql: "SELECT id FROM product_steps WHERE id = ?",
+      args: [body.product_step_id]
+    });
+    const step = stepResult.rows[0];
     if (!step) {
       return Response.json({ error: "Product step not found" }, { status: 404 });
     }
 
     // Check if proficiency already exists
-    const existing = db.query(
-      "SELECT * FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?"
-    ).get(body.worker_id, body.product_step_id) as WorkerProficiency | null;
+    const existingResult = await db.execute({
+      sql: "SELECT * FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?",
+      args: [body.worker_id, body.product_step_id]
+    });
+    const existing = existingResult.rows[0] as unknown as WorkerProficiency | undefined;
 
     if (existing) {
       // Record history if level changed
       if (existing.level !== body.level) {
-        db.run(
-          `INSERT INTO proficiency_history (worker_id, product_step_id, old_level, new_level, reason)
+        await db.execute({
+          sql: `INSERT INTO proficiency_history (worker_id, product_step_id, old_level, new_level, reason)
            VALUES (?, ?, ?, ?, 'manual')`,
-          [body.worker_id, body.product_step_id, existing.level, body.level]
-        );
+          args: [body.worker_id, body.product_step_id, existing.level, body.level]
+        });
       }
 
       // Update existing
-      db.run(
-        `UPDATE worker_proficiencies SET level = ?, updated_at = CURRENT_TIMESTAMP
+      await db.execute({
+        sql: `UPDATE worker_proficiencies SET level = ?, updated_at = CURRENT_TIMESTAMP
          WHERE worker_id = ? AND product_step_id = ?`,
-        [body.level, body.worker_id, body.product_step_id]
-      );
+        args: [body.level, body.worker_id, body.product_step_id]
+      });
 
-      const updated = db.query(
-        "SELECT * FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?"
-      ).get(body.worker_id, body.product_step_id) as WorkerProficiency;
+      const updatedResult = await db.execute({
+        sql: "SELECT * FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?",
+        args: [body.worker_id, body.product_step_id]
+      });
+      const updated = updatedResult.rows[0] as unknown as WorkerProficiency;
 
       return Response.json(updated);
     } else {
       // Record history for new proficiency if not default level
       if (body.level !== 3) {
-        db.run(
-          `INSERT INTO proficiency_history (worker_id, product_step_id, old_level, new_level, reason)
+        await db.execute({
+          sql: `INSERT INTO proficiency_history (worker_id, product_step_id, old_level, new_level, reason)
            VALUES (?, ?, 3, ?, 'manual')`,
-          [body.worker_id, body.product_step_id, body.level]
-        );
+          args: [body.worker_id, body.product_step_id, body.level]
+        });
       }
 
       // Insert new
-      const result = db.run(
-        `INSERT INTO worker_proficiencies (worker_id, product_step_id, level)
+      const result = await db.execute({
+        sql: `INSERT INTO worker_proficiencies (worker_id, product_step_id, level)
          VALUES (?, ?, ?)`,
-        [body.worker_id, body.product_step_id, body.level]
-      );
+        args: [body.worker_id, body.product_step_id, body.level]
+      });
 
-      const created = db.query(
-        "SELECT * FROM worker_proficiencies WHERE id = ?"
-      ).get(result.lastInsertRowid) as WorkerProficiency;
+      const createdResult = await db.execute({
+        sql: "SELECT * FROM worker_proficiencies WHERE id = ?",
+        args: [result.lastInsertRowid]
+      });
+      const created = createdResult.rows[0] as unknown as WorkerProficiency;
 
       return Response.json(created, { status: 201 });
     }
@@ -202,9 +225,11 @@ async function handleCreateOrUpdateProficiency(request: Request): Promise<Respon
 
 async function handleUpdateProficiency(request: Request, proficiencyId: number): Promise<Response> {
   try {
-    const existing = db.query(
-      "SELECT * FROM worker_proficiencies WHERE id = ?"
-    ).get(proficiencyId) as WorkerProficiency | null;
+    const existingResult = await db.execute({
+      sql: "SELECT * FROM worker_proficiencies WHERE id = ?",
+      args: [proficiencyId]
+    });
+    const existing = existingResult.rows[0] as unknown as WorkerProficiency | undefined;
 
     if (!existing) {
       return Response.json({ error: "Proficiency not found" }, { status: 404 });
@@ -221,21 +246,23 @@ async function handleUpdateProficiency(request: Request, proficiencyId: number):
 
     // Record history if level changed
     if (existing.level !== body.level) {
-      db.run(
-        `INSERT INTO proficiency_history (worker_id, product_step_id, old_level, new_level, reason)
+      await db.execute({
+        sql: `INSERT INTO proficiency_history (worker_id, product_step_id, old_level, new_level, reason)
          VALUES (?, ?, ?, ?, 'manual')`,
-        [existing.worker_id, existing.product_step_id, existing.level, body.level]
-      );
+        args: [existing.worker_id, existing.product_step_id, existing.level, body.level]
+      });
     }
 
-    db.run(
-      `UPDATE worker_proficiencies SET level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-      [body.level, proficiencyId]
-    );
+    await db.execute({
+      sql: `UPDATE worker_proficiencies SET level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      args: [body.level, proficiencyId]
+    });
 
-    const updated = db.query(
-      "SELECT * FROM worker_proficiencies WHERE id = ?"
-    ).get(proficiencyId) as WorkerProficiency;
+    const updatedResult = await db.execute({
+      sql: "SELECT * FROM worker_proficiencies WHERE id = ?",
+      args: [proficiencyId]
+    });
+    const updated = updatedResult.rows[0] as unknown as WorkerProficiency;
 
     return Response.json(updated);
   } catch {
@@ -243,32 +270,39 @@ async function handleUpdateProficiency(request: Request, proficiencyId: number):
   }
 }
 
-function handleDeleteProficiency(proficiencyId: number): Response {
-  const existing = db.query(
-    "SELECT * FROM worker_proficiencies WHERE id = ?"
-  ).get(proficiencyId) as WorkerProficiency | null;
+async function handleDeleteProficiency(proficiencyId: number): Promise<Response> {
+  const existingResult = await db.execute({
+    sql: "SELECT * FROM worker_proficiencies WHERE id = ?",
+    args: [proficiencyId]
+  });
+  const existing = existingResult.rows[0] as unknown as WorkerProficiency | undefined;
 
   if (!existing) {
     return Response.json({ error: "Proficiency not found" }, { status: 404 });
   }
 
   // Record history for deletion (reverting to default)
-  db.run(
-    `INSERT INTO proficiency_history (worker_id, product_step_id, old_level, new_level, reason)
+  await db.execute({
+    sql: `INSERT INTO proficiency_history (worker_id, product_step_id, old_level, new_level, reason)
      VALUES (?, ?, ?, 3, 'manual')`,
-    [existing.worker_id, existing.product_step_id, existing.level]
-  );
+    args: [existing.worker_id, existing.product_step_id, existing.level]
+  });
 
-  db.run("DELETE FROM worker_proficiencies WHERE id = ?", [proficiencyId]);
+  await db.execute({
+    sql: "DELETE FROM worker_proficiencies WHERE id = ?",
+    args: [proficiencyId]
+  });
 
   return Response.json({ success: true });
 }
 
 // Helper function to get proficiency level for a worker-step pair
-export function getWorkerProficiencyLevel(workerId: number, productStepId: number): number {
-  const prof = db.query(
-    "SELECT level FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?"
-  ).get(workerId, productStepId) as { level: number } | null;
+export async function getWorkerProficiencyLevel(workerId: number, productStepId: number): Promise<number> {
+  const result = await db.execute({
+    sql: "SELECT level FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?",
+    args: [workerId, productStepId]
+  });
+  const prof = result.rows[0] as unknown as { level: number } | undefined;
 
   return prof?.level ?? 3; // Default to level 3 (standard)
 }
@@ -283,7 +317,7 @@ export const PROFICIENCY_MULTIPLIERS: Record<number, number> = {
 };
 
 // Get time multiplier for a worker-step combination
-export function getProficiencyMultiplier(workerId: number, productStepId: number): number {
-  const level = getWorkerProficiencyLevel(workerId, productStepId);
+export async function getProficiencyMultiplier(workerId: number, productStepId: number): Promise<number> {
+  const level = await getWorkerProficiencyLevel(workerId, productStepId);
   return PROFICIENCY_MULTIPLIERS[level] ?? 1.0;
 }

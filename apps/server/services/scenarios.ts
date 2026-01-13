@@ -36,14 +36,18 @@ interface CapacityAnalysis {
 }
 
 // Calculate work hours required for an order
-function calculateOrderHours(orderId: number): number {
-  const order = db.query(`
+async function calculateOrderHours(orderId: number): Promise<number> {
+  const orderResult = await db.execute({
+    sql: `
     SELECT o.quantity, ps.time_per_piece_seconds
     FROM orders o
     JOIN products p ON o.product_id = p.id
     JOIN product_steps ps ON ps.product_id = p.id
     WHERE o.id = ?
-  `).all(orderId) as { quantity: number; time_per_piece_seconds: number }[];
+  `,
+    args: [orderId]
+  });
+  const order = orderResult.rows as unknown as { quantity: number; time_per_piece_seconds: number }[];
 
   let totalSeconds = 0;
   for (const step of order) {
@@ -54,15 +58,14 @@ function calculateOrderHours(orderId: number): number {
 }
 
 // Get available work capacity (hours) for a date range
-function getAvailableCapacity(
+async function getAvailableCapacity(
   startDate: string,
   endDate: string,
   workerOverrides?: WorkerPoolOverride[]
-): number {
+): Promise<number> {
   // Get active workers
-  let workers = db.query(
-    "SELECT id FROM workers WHERE status = 'active'"
-  ).all() as { id: number }[];
+  const workersResult = await db.execute("SELECT id FROM workers WHERE status = 'active'");
+  let workers = workersResult.rows as unknown as { id: number }[];
 
   // Apply overrides
   if (workerOverrides) {
@@ -90,21 +93,22 @@ function getAvailableCapacity(
 }
 
 // Get deadline risks for pending orders
-export function getDeadlineRisks(): DeadlineRisk[] {
-  const orders = db.query(`
+export async function getDeadlineRisks(): Promise<DeadlineRisk[]> {
+  const ordersResult = await db.execute(`
     SELECT o.id, o.due_date, o.quantity, p.name as product_name
     FROM orders o
     JOIN products p ON o.product_id = p.id
     WHERE o.status IN ('pending', 'scheduled', 'in_progress')
     ORDER BY o.due_date
-  `).all() as { id: number; due_date: string; quantity: number; product_name: string }[];
+  `);
+  const orders = ordersResult.rows as unknown as { id: number; due_date: string; quantity: number; product_name: string }[];
 
   const today = new Date().toISOString().split('T')[0]!;
   const risks: DeadlineRisk[] = [];
 
   for (const order of orders) {
-    const requiredHours = calculateOrderHours(order.id);
-    const availableHours = getAvailableCapacity(today, order.due_date);
+    const requiredHours = await calculateOrderHours(order.id);
+    const availableHours = await getAvailableCapacity(today, order.due_date);
 
     const canMeet = availableHours >= requiredHours;
     const shortfallHours = canMeet ? 0 : requiredHours - availableHours;
@@ -124,9 +128,9 @@ export function getDeadlineRisks(): DeadlineRisk[] {
 }
 
 // Get overtime projections based on schedule entries
-export function getOvertimeProjections(): OvertimeProjection[] {
+export async function getOvertimeProjections(): Promise<OvertimeProjection[]> {
   // Get scheduled entries grouped by date
-  const entries = db.query(`
+  const entriesResult = await db.execute(`
     SELECT
       date,
       start_time,
@@ -134,7 +138,8 @@ export function getOvertimeProjections(): OvertimeProjection[] {
     FROM schedule_entries
     WHERE date >= date('now')
     ORDER BY date
-  `).all() as { date: string; start_time: string; end_time: string }[];
+  `);
+  const entries = entriesResult.rows as unknown as { date: string; start_time: string; end_time: string }[];
 
   // Group by date and calculate hours
   const byDate: Record<string, number> = {};
@@ -167,24 +172,25 @@ export function getOvertimeProjections(): OvertimeProjection[] {
 }
 
 // Get capacity analysis
-export function getCapacityAnalysis(weeks: number = 8): CapacityAnalysis {
+export async function getCapacityAnalysis(weeks: number = 8): Promise<CapacityAnalysis> {
   const today = new Date();
   const endDate = new Date(today);
   endDate.setDate(today.getDate() + weeks * 7);
 
-  const totalAvailableHours = getAvailableCapacity(
+  const totalAvailableHours = await getAvailableCapacity(
     today.toISOString().split('T')[0]!,
     endDate.toISOString().split('T')[0]!
   );
 
   // Calculate required hours from all pending orders
-  const orders = db.query(
+  const ordersResult = await db.execute(
     "SELECT id FROM orders WHERE status IN ('pending', 'scheduled', 'in_progress')"
-  ).all() as { id: number }[];
+  );
+  const orders = ordersResult.rows as unknown as { id: number }[];
 
   let totalRequiredHours = 0;
   for (const order of orders) {
-    totalRequiredHours += calculateOrderHours(order.id);
+    totalRequiredHours += await calculateOrderHours(order.id);
   }
 
   // Weekly breakdown
@@ -196,23 +202,27 @@ export function getCapacityAnalysis(weeks: number = 8): CapacityAnalysis {
     const weekEnd = new Date(currentWeekStart);
     weekEnd.setDate(weekEnd.getDate() + 6);
 
-    const weekAvailable = getAvailableCapacity(
+    const weekAvailable = await getAvailableCapacity(
       currentWeekStart.toISOString().split('T')[0]!,
       weekEnd.toISOString().split('T')[0]!
     );
 
     // Get scheduled hours for this week
-    const scheduledHours = db.query(`
+    const scheduledHoursResult = await db.execute({
+      sql: `
       SELECT SUM(
         (CAST(substr(end_time, 1, 2) AS INTEGER) * 60 + CAST(substr(end_time, 4, 2) AS INTEGER)) -
         (CAST(substr(start_time, 1, 2) AS INTEGER) * 60 + CAST(substr(start_time, 4, 2) AS INTEGER))
       ) / 60.0 as total_hours
       FROM schedule_entries
       WHERE date >= ? AND date <= ?
-    `).get(
-      currentWeekStart.toISOString().split('T')[0],
-      weekEnd.toISOString().split('T')[0]
-    ) as { total_hours: number | null };
+    `,
+      args: [
+        currentWeekStart.toISOString().split('T')[0],
+        weekEnd.toISOString().split('T')[0]
+      ]
+    });
+    const scheduledHours = scheduledHoursResult.rows[0] as unknown as { total_hours: number | null };
 
     weeklyBreakdown.push({
       weekStart: currentWeekStart.toISOString().split('T')[0]!,
@@ -234,24 +244,29 @@ export function getCapacityAnalysis(weeks: number = 8): CapacityAnalysis {
 }
 
 // Create a what-if scenario
-export function createScenario(
+export async function createScenario(
   name: string,
   description: string | null,
   workerPoolOverrides: WorkerPoolOverride[]
-): SchedulingScenario {
+): Promise<SchedulingScenario> {
   const workerPool = JSON.stringify(workerPoolOverrides);
 
-  const result = db.run(
-    "INSERT INTO scheduling_scenarios (name, description, worker_pool) VALUES (?, ?, ?)",
-    [name, description, workerPool]
-  );
+  const result = await db.execute({
+    sql: "INSERT INTO scheduling_scenarios (name, description, worker_pool) VALUES (?, ?, ?)",
+    args: [name, description, workerPool]
+  });
 
-  return db.query("SELECT * FROM scheduling_scenarios WHERE id = ?").get(result.lastInsertRowid) as SchedulingScenario;
+  const scenarioResult = await db.execute({
+    sql: "SELECT * FROM scheduling_scenarios WHERE id = ?",
+    args: [result.lastInsertRowid]
+  });
+  return scenarioResult.rows[0] as unknown as SchedulingScenario;
 }
 
 // Get all scenarios with parsed worker pools
-export function getScenarios(): (SchedulingScenario & { workerPoolParsed: WorkerPoolOverride[] })[] {
-  const scenarios = db.query("SELECT * FROM scheduling_scenarios ORDER BY created_at DESC").all() as SchedulingScenario[];
+export async function getScenarios(): Promise<(SchedulingScenario & { workerPoolParsed: WorkerPoolOverride[] })[]> {
+  const scenariosResult = await db.execute("SELECT * FROM scheduling_scenarios ORDER BY created_at DESC");
+  const scenarios = scenariosResult.rows as unknown as SchedulingScenario[];
   return scenarios.map((s) => ({
     ...s,
     workerPoolParsed: JSON.parse(s.worker_pool) as WorkerPoolOverride[],
@@ -259,8 +274,12 @@ export function getScenarios(): (SchedulingScenario & { workerPoolParsed: Worker
 }
 
 // Get scenario by ID with parsed worker pool
-export function getScenario(scenarioId: number): (SchedulingScenario & { workerPoolParsed: WorkerPoolOverride[] }) | null {
-  const scenario = db.query("SELECT * FROM scheduling_scenarios WHERE id = ?").get(scenarioId) as SchedulingScenario | null;
+export async function getScenario(scenarioId: number): Promise<(SchedulingScenario & { workerPoolParsed: WorkerPoolOverride[] }) | null> {
+  const scenarioResult = await db.execute({
+    sql: "SELECT * FROM scheduling_scenarios WHERE id = ?",
+    args: [scenarioId]
+  });
+  const scenario = scenarioResult.rows[0] as unknown as SchedulingScenario | undefined;
 
   if (!scenario) return null;
 
@@ -271,31 +290,32 @@ export function getScenario(scenarioId: number): (SchedulingScenario & { workerP
 }
 
 // Generate schedule for a scenario (calculate deadline risks with scenario overrides)
-export function generateScenarioSchedule(scenarioId: number): {
+export async function generateScenarioSchedule(scenarioId: number): Promise<{
   scenario: SchedulingScenario;
   deadlineRisks: DeadlineRisk[];
   capacityAnalysis: CapacityAnalysis;
-} | null {
-  const scenario = getScenario(scenarioId);
+} | null> {
+  const scenario = await getScenario(scenarioId);
   if (!scenario) return null;
 
   const workerOverrides = scenario.workerPoolParsed;
 
   // Recalculate deadline risks with scenario worker pool
-  const orders = db.query(`
+  const ordersResult = await db.execute(`
     SELECT o.id, o.due_date, o.quantity, p.name as product_name
     FROM orders o
     JOIN products p ON o.product_id = p.id
     WHERE o.status IN ('pending', 'scheduled', 'in_progress')
     ORDER BY o.due_date
-  `).all() as { id: number; due_date: string; quantity: number; product_name: string }[];
+  `);
+  const orders = ordersResult.rows as unknown as { id: number; due_date: string; quantity: number; product_name: string }[];
 
   const today = new Date().toISOString().split('T')[0]!;
   const deadlineRisks: DeadlineRisk[] = [];
 
   for (const order of orders) {
-    const requiredHours = calculateOrderHours(order.id);
-    const availableHours = getAvailableCapacity(today, order.due_date, workerOverrides);
+    const requiredHours = await calculateOrderHours(order.id);
+    const availableHours = await getAvailableCapacity(today, order.due_date, workerOverrides);
 
     const canMeet = availableHours >= requiredHours;
     const shortfallHours = canMeet ? 0 : requiredHours - availableHours;
@@ -315,11 +335,11 @@ export function generateScenarioSchedule(scenarioId: number): {
   const endDate = new Date();
   endDate.setDate(endDate.getDate() + 56); // 8 weeks
 
-  const totalAvailableHours = getAvailableCapacity(today, endDate.toISOString().split('T')[0]!, workerOverrides);
+  const totalAvailableHours = await getAvailableCapacity(today, endDate.toISOString().split('T')[0]!, workerOverrides);
 
   let totalRequiredHours = 0;
   for (const order of orders) {
-    totalRequiredHours += calculateOrderHours(order.id);
+    totalRequiredHours += await calculateOrderHours(order.id);
   }
 
   // Calculate weekly breakdown for scenario
@@ -331,24 +351,28 @@ export function generateScenarioSchedule(scenarioId: number): {
     const weekEnd = new Date(currentWeekStart);
     weekEnd.setDate(weekEnd.getDate() + 6);
 
-    const weekAvailable = getAvailableCapacity(
+    const weekAvailable = await getAvailableCapacity(
       currentWeekStart.toISOString().split('T')[0]!,
       weekEnd.toISOString().split('T')[0]!,
       workerOverrides
     );
 
     // Get scheduled hours for this week
-    const scheduledHours = db.query(`
+    const scheduledHoursResult = await db.execute({
+      sql: `
       SELECT SUM(
         (CAST(substr(end_time, 1, 2) AS INTEGER) * 60 + CAST(substr(end_time, 4, 2) AS INTEGER)) -
         (CAST(substr(start_time, 1, 2) AS INTEGER) * 60 + CAST(substr(start_time, 4, 2) AS INTEGER))
       ) / 60.0 as total_hours
       FROM schedule_entries
       WHERE date >= ? AND date <= ?
-    `).get(
-      currentWeekStart.toISOString().split('T')[0],
-      weekEnd.toISOString().split('T')[0]
-    ) as { total_hours: number | null };
+    `,
+      args: [
+        currentWeekStart.toISOString().split('T')[0],
+        weekEnd.toISOString().split('T')[0]
+      ]
+    });
+    const scheduledHours = scheduledHoursResult.rows[0] as unknown as { total_hours: number | null };
 
     weeklyBreakdown.push({
       weekStart: currentWeekStart.toISOString().split('T')[0]!,
@@ -376,12 +400,22 @@ export function generateScenarioSchedule(scenarioId: number): {
 }
 
 // Delete a scenario
-export function deleteScenario(scenarioId: number): boolean {
-  const scenario = db.query("SELECT id FROM scheduling_scenarios WHERE id = ?").get(scenarioId);
+export async function deleteScenario(scenarioId: number): Promise<boolean> {
+  const scenarioResult = await db.execute({
+    sql: "SELECT id FROM scheduling_scenarios WHERE id = ?",
+    args: [scenarioId]
+  });
+  const scenario = scenarioResult.rows[0];
   if (!scenario) return false;
 
-  db.run("DELETE FROM scenario_schedules WHERE scenario_id = ?", [scenarioId]);
-  db.run("DELETE FROM scheduling_scenarios WHERE id = ?", [scenarioId]);
+  await db.execute({
+    sql: "DELETE FROM scenario_schedules WHERE scenario_id = ?",
+    args: [scenarioId]
+  });
+  await db.execute({
+    sql: "DELETE FROM scheduling_scenarios WHERE id = ?",
+    args: [scenarioId]
+  });
 
   return true;
 }

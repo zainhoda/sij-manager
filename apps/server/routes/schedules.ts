@@ -8,17 +8,19 @@ export async function handleSchedules(request: Request): Promise<Response | null
 
   // GET /api/schedules - list all schedules with entries
   if (url.pathname === "/api/schedules" && request.method === "GET") {
-    const schedules = db.query(`
+    const schedulesResult = await db.execute(`
       SELECT s.*, o.quantity, o.due_date, o.color as order_color, p.name as product_name
       FROM schedules s
       JOIN orders o ON s.order_id = o.id
       JOIN products p ON o.product_id = p.id
       ORDER BY s.created_at DESC
-    `).all() as (Schedule & { quantity: number; due_date: string; product_name: string; order_color: string | null })[];
+    `);
+    const schedules = schedulesResult.rows as unknown as (Schedule & { quantity: number; due_date: string; product_name: string; order_color: string | null })[];
 
     // Fetch entries for each schedule and group by date
-    const schedulesWithEntries = schedules.map((schedule) => {
-      const entries = db.query(`
+    const schedulesWithEntries = await Promise.all(schedules.map(async (schedule) => {
+      const entriesResult = await db.execute({
+        sql: `
         SELECT
           se.*,
           ps.name as step_name,
@@ -31,7 +33,10 @@ export async function handleSchedules(request: Request): Promise<Response | null
         JOIN orders o ON s.order_id = o.id
         WHERE se.schedule_id = ?
         ORDER BY se.date, se.start_time
-      `).all(schedule.id) as (ScheduleEntry & {
+      `,
+        args: [schedule.id]
+      });
+      const entries = entriesResult.rows as unknown as (ScheduleEntry & {
         step_name: string;
         category: string;
         required_skill_category: string;
@@ -52,7 +57,7 @@ export async function handleSchedules(request: Request): Promise<Response | null
         entries,
         entriesByDate,
       };
-    });
+    }));
 
     return Response.json(schedulesWithEntries);
   }
@@ -66,7 +71,7 @@ export async function handleSchedules(request: Request): Promise<Response | null
   const scheduleMatch = url.pathname.match(/^\/api\/schedules\/(\d+)$/);
   if (scheduleMatch && request.method === "GET") {
     const scheduleId = parseInt(scheduleMatch[1]!);
-    const schedule = getScheduleWithEntries(scheduleId);
+    const schedule = await getScheduleWithEntries(scheduleId);
     if (!schedule) {
       return Response.json({ error: "Schedule not found" }, { status: 404 });
     }
@@ -78,17 +83,31 @@ export async function handleSchedules(request: Request): Promise<Response | null
     const scheduleId = parseInt(scheduleMatch[1]!);
 
     // Get order ID to reset status
-    const schedule = db.query("SELECT order_id FROM schedules WHERE id = ?").get(scheduleId) as { order_id: number } | null;
+    const scheduleResult = await db.execute({
+      sql: "SELECT order_id FROM schedules WHERE id = ?",
+      args: [scheduleId]
+    });
+    const schedule = scheduleResult.rows[0] as unknown as { order_id: number } | undefined;
+    
     if (!schedule) {
       return Response.json({ error: "Schedule not found" }, { status: 404 });
     }
 
     // Delete entries first (foreign key constraint)
-    db.run("DELETE FROM schedule_entries WHERE schedule_id = ?", [scheduleId]);
-    db.run("DELETE FROM schedules WHERE id = ?", [scheduleId]);
+    await db.execute({
+      sql: "DELETE FROM schedule_entries WHERE schedule_id = ?",
+      args: [scheduleId]
+    });
+    await db.execute({
+      sql: "DELETE FROM schedules WHERE id = ?",
+      args: [scheduleId]
+    });
 
     // Reset order status
-    db.run("UPDATE orders SET status = 'pending' WHERE id = ?", [schedule.order_id]);
+    await db.execute({
+      sql: "UPDATE orders SET status = 'pending' WHERE id = ?",
+      args: [schedule.order_id]
+    });
 
     return Response.json({ success: true });
   }
@@ -97,7 +116,7 @@ export async function handleSchedules(request: Request): Promise<Response | null
   const replanMatch = url.pathname.match(/^\/api\/schedules\/(\d+)\/replan$/);
   if (replanMatch && request.method === "POST") {
     const scheduleId = parseInt(replanMatch[1]!);
-    const result = generateReplanDraft(scheduleId);
+    const result = await generateReplanDraft(scheduleId);
     if (!result) {
       return Response.json({ error: "Schedule not found" }, { status: 404 });
     }
@@ -115,12 +134,12 @@ export async function handleSchedules(request: Request): Promise<Response | null
         return Response.json({ error: "Missing required field: entries" }, { status: 400 });
       }
 
-      const schedule = commitReplan(scheduleId, body);
+      const schedule = await commitReplan(scheduleId, body);
       if (!schedule) {
         return Response.json({ error: "Schedule not found" }, { status: 404 });
       }
 
-      const scheduleWithEntries = getScheduleWithEntries(schedule.id);
+      const scheduleWithEntries = await getScheduleWithEntries(schedule.id);
       return Response.json(scheduleWithEntries);
     } catch (error) {
       console.error("Error committing replan:", error);
@@ -140,9 +159,11 @@ async function handleGenerateSchedule(request: Request): Promise<Response> {
     }
 
     // Check if order already has a schedule
-    const existingSchedule = db.query(
-      "SELECT id FROM schedules WHERE order_id = ?"
-    ).get(body.order_id) as { id: number } | null;
+    const existingScheduleResult = await db.execute({
+      sql: "SELECT id FROM schedules WHERE order_id = ?",
+      args: [body.order_id]
+    });
+    const existingSchedule = existingScheduleResult.rows[0];
 
     if (existingSchedule) {
       return Response.json(
@@ -151,12 +172,12 @@ async function handleGenerateSchedule(request: Request): Promise<Response> {
       );
     }
 
-    const schedule = generateSchedule(body.order_id);
+    const schedule = await generateSchedule(body.order_id);
     if (!schedule) {
       return Response.json({ error: "Failed to generate schedule. Order not found." }, { status: 404 });
     }
 
-    const scheduleWithEntries = getScheduleWithEntries(schedule.id);
+    const scheduleWithEntries = await getScheduleWithEntries(schedule.id);
     return Response.json(scheduleWithEntries, { status: 201 });
   } catch (error) {
     console.error("Error generating schedule:", error);

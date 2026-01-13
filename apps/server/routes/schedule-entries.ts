@@ -18,8 +18,9 @@ interface ScheduleEntryWithAssignments extends ScheduleEntry {
 }
 
 // Helper to get assignments for an entry
-function getAssignmentsForEntry(entryId: number): AssignmentWithWorker[] {
-  return db.query(`
+async function getAssignmentsForEntry(entryId: number): Promise<AssignmentWithWorker[]> {
+  const result = await db.execute({
+    sql: `
     SELECT
       twa.*,
       w.name as worker_name
@@ -27,7 +28,10 @@ function getAssignmentsForEntry(entryId: number): AssignmentWithWorker[] {
     JOIN workers w ON twa.worker_id = w.id
     WHERE twa.schedule_entry_id = ?
     ORDER BY twa.assigned_at
-  `).all(entryId) as AssignmentWithWorker[];
+  `,
+    args: [entryId]
+  });
+  return result.rows as unknown as AssignmentWithWorker[];
 }
 
 // Helper to compute task status from assignments
@@ -59,7 +63,7 @@ export async function handleScheduleEntries(request: Request): Promise<Response 
 
   // GET /api/schedule-entries - get all entries (for admin view)
   if (url.pathname === "/api/schedule-entries" && request.method === "GET") {
-    const entries = db.query(`
+    const result = await db.execute(`
       SELECT
         se.*,
         ps.name as step_name,
@@ -76,7 +80,8 @@ export async function handleScheduleEntries(request: Request): Promise<Response 
       JOIN orders o ON s.order_id = o.id
       JOIN products p ON o.product_id = p.id
       ORDER BY se.date, se.start_time
-    `).all() as (ScheduleEntry & {
+    `);
+    const entries = result.rows as unknown as (ScheduleEntry & {
       step_name: string;
       category: string;
       time_per_piece_seconds: number;
@@ -88,15 +93,15 @@ export async function handleScheduleEntries(request: Request): Promise<Response 
     })[];
 
     // Enrich each entry with assignments
-    const enrichedEntries = entries.map(entry => {
-      const assignments = getAssignmentsForEntry(entry.id);
+    const enrichedEntries = await Promise.all(entries.map(async entry => {
+      const assignments = await getAssignmentsForEntry(entry.id);
       return {
         ...entry,
         computed_status: computeTaskStatus(assignments),
         total_actual_output: computeTotalActualOutput(assignments),
         assignments,
       };
-    });
+    }));
 
     return Response.json(enrichedEntries);
   }
@@ -105,7 +110,8 @@ export async function handleScheduleEntries(request: Request): Promise<Response 
   const entryMatch = url.pathname.match(/^\/api\/schedule-entries\/(\d+)$/);
   if (entryMatch && request.method === "GET") {
     const entryId = parseInt(entryMatch[1]!);
-    const entry = db.query(`
+    const result = await db.execute({
+      sql: `
       SELECT
         se.*,
         ps.name as step_name,
@@ -115,18 +121,21 @@ export async function handleScheduleEntries(request: Request): Promise<Response 
       FROM schedule_entries se
       JOIN product_steps ps ON se.product_step_id = ps.id
       WHERE se.id = ?
-    `).get(entryId) as (ScheduleEntry & {
+    `,
+      args: [entryId]
+    });
+    const entry = result.rows[0] as unknown as (ScheduleEntry & {
       step_name: string;
       category: string;
       time_per_piece_seconds: number;
       required_skill_category: string;
-    }) | null;
+    }) | undefined;
 
     if (!entry) {
       return Response.json({ error: "Schedule entry not found" }, { status: 404 });
     }
 
-    const assignments = getAssignmentsForEntry(entryId);
+    const assignments = await getAssignmentsForEntry(entryId);
     const enrichedEntry: ScheduleEntryWithAssignments = {
       ...entry,
       computed_status: computeTaskStatus(assignments),
@@ -148,7 +157,7 @@ export async function handleScheduleEntries(request: Request): Promise<Response 
   const assignmentsMatch = url.pathname.match(/^\/api\/schedule-entries\/(\d+)\/assignments$/);
   if (assignmentsMatch && request.method === "GET") {
     const entryId = parseInt(assignmentsMatch[1]!);
-    const assignments = getAssignmentsForEntry(entryId);
+    const assignments = await getAssignmentsForEntry(entryId);
     return Response.json(assignments);
   }
 
@@ -163,12 +172,12 @@ export async function handleScheduleEntries(request: Request): Promise<Response 
     const entryId = parseInt(removeAssignmentMatch[1]!);
     const workerId = parseInt(removeAssignmentMatch[2]!);
 
-    const result = db.run(
-      "DELETE FROM task_worker_assignments WHERE schedule_entry_id = ? AND worker_id = ?",
-      [entryId, workerId]
-    );
+    const result = await db.execute({
+      sql: "DELETE FROM task_worker_assignments WHERE schedule_entry_id = ? AND worker_id = ?",
+      args: [entryId, workerId]
+    });
 
-    if (result.changes === 0) {
+    if (result.rowsAffected === 0) {
       return Response.json({ error: "Assignment not found" }, { status: 404 });
     }
 
@@ -185,27 +194,31 @@ export async function handleScheduleEntries(request: Request): Promise<Response 
     const timeStr = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
 
     // Record initial output (0) in history when work starts
-    db.run(
-      `INSERT INTO assignment_output_history (assignment_id, output, recorded_at)
+    await db.execute({
+      sql: `INSERT INTO assignment_output_history (assignment_id, output, recorded_at)
        VALUES (?, 0, datetime('now'))`,
-      [assignmentId]
-    );
+      args: [assignmentId]
+    });
 
-    const result = db.run(
-      "UPDATE task_worker_assignments SET actual_start_time = ?, status = 'in_progress' WHERE id = ?",
-      [timeStr, assignmentId]
-    );
+    const result = await db.execute({
+      sql: "UPDATE task_worker_assignments SET actual_start_time = ?, status = 'in_progress' WHERE id = ?",
+      args: [timeStr, assignmentId]
+    });
 
-    if (result.changes === 0) {
+    if (result.rowsAffected === 0) {
       return Response.json({ error: "Assignment not found" }, { status: 404 });
     }
 
-    const assignment = db.query(`
+    const assignmentResult = await db.execute({
+      sql: `
       SELECT twa.*, w.name as worker_name
       FROM task_worker_assignments twa
       JOIN workers w ON twa.worker_id = w.id
       WHERE twa.id = ?
-    `).get(assignmentId) as AssignmentWithWorker;
+    `,
+      args: [assignmentId]
+    });
+    const assignment = assignmentResult.rows[0] as unknown as AssignmentWithWorker;
 
     return Response.json(assignment);
   }
@@ -221,7 +234,8 @@ export async function handleScheduleEntries(request: Request): Promise<Response 
   if (assignmentHistoryMatch && request.method === "GET") {
     const assignmentId = parseInt(assignmentHistoryMatch[1]!);
     
-    const history = db.query(`
+    const historyResult = await db.execute({
+      sql: `
       SELECT 
         aoh.id,
         aoh.output,
@@ -231,7 +245,11 @@ export async function handleScheduleEntries(request: Request): Promise<Response 
       JOIN task_worker_assignments twa ON aoh.assignment_id = twa.id
       WHERE aoh.assignment_id = ?
       ORDER BY aoh.recorded_at ASC
-    `).all(assignmentId) as {
+    `,
+      args: [assignmentId]
+    });
+    
+    const history = historyResult.rows as unknown as {
       id: number;
       output: number;
       recorded_at: string;
@@ -257,16 +275,20 @@ export async function handleScheduleEntries(request: Request): Promise<Response 
     const timeStr = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
 
     // Legacy behavior: update the deprecated fields on schedule_entries
-    const result = db.run(
-      "UPDATE schedule_entries SET actual_start_time = ?, status = 'in_progress' WHERE id = ?",
-      [timeStr, entryId]
-    );
+    const result = await db.execute({
+      sql: "UPDATE schedule_entries SET actual_start_time = ?, status = 'in_progress' WHERE id = ?",
+      args: [timeStr, entryId]
+    });
 
-    if (result.changes === 0) {
+    if (result.rowsAffected === 0) {
       return Response.json({ error: "Schedule entry not found" }, { status: 404 });
     }
 
-    const entry = db.query("SELECT * FROM schedule_entries WHERE id = ?").get(entryId) as ScheduleEntry;
+    const entryResult = await db.execute({
+      sql: "SELECT * FROM schedule_entries WHERE id = ?",
+      args: [entryId]
+    });
+    const entry = entryResult.rows[0] as unknown as ScheduleEntry;
     return Response.json(entry);
   }
 
@@ -288,23 +310,31 @@ async function handleAddAssignment(entryId: number, request: Request): Promise<R
     }
 
     // Check entry exists
-    const entry = db.query("SELECT id FROM schedule_entries WHERE id = ?").get(entryId);
+    const entryResult = await db.execute({
+      sql: "SELECT id FROM schedule_entries WHERE id = ?",
+      args: [entryId]
+    });
+    const entry = entryResult.rows[0];
     if (!entry) {
       return Response.json({ error: "Schedule entry not found" }, { status: 404 });
     }
 
     // Check worker exists
-    const worker = db.query("SELECT id FROM workers WHERE id = ?").get(body.worker_id);
+    const workerResult = await db.execute({
+      sql: "SELECT id FROM workers WHERE id = ?",
+      args: [body.worker_id]
+    });
+    const worker = workerResult.rows[0];
     if (!worker) {
       return Response.json({ error: "Worker not found" }, { status: 404 });
     }
 
     // Insert assignment
     try {
-      db.run(
-        "INSERT INTO task_worker_assignments (schedule_entry_id, worker_id) VALUES (?, ?)",
-        [entryId, body.worker_id]
-      );
+      await db.execute({
+        sql: "INSERT INTO task_worker_assignments (schedule_entry_id, worker_id) VALUES (?, ?)",
+        args: [entryId, body.worker_id]
+      });
     } catch (e: any) {
       if (e.message?.includes("UNIQUE constraint")) {
         return Response.json({ error: "Worker already assigned to this task" }, { status: 409 });
@@ -312,7 +342,7 @@ async function handleAddAssignment(entryId: number, request: Request): Promise<R
       throw e;
     }
 
-    const assignments = getAssignmentsForEntry(entryId);
+    const assignments = await getAssignmentsForEntry(entryId);
     return Response.json(assignments, { status: 201 });
   } catch (error) {
     console.error("Error adding assignment:", error);
@@ -335,29 +365,33 @@ async function handleCompleteAssignment(assignmentId: number, request: Request):
     const timeStr = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
 
     // Record final output in history (non-destructive)
-    db.run(
-      `INSERT INTO assignment_output_history (assignment_id, output, recorded_at)
+    await db.execute({
+      sql: `INSERT INTO assignment_output_history (assignment_id, output, recorded_at)
        VALUES (?, ?, datetime('now'))`,
-      [assignmentId, body.actual_output]
-    );
+      args: [assignmentId, body.actual_output]
+    });
 
-    const result = db.run(
-      `UPDATE task_worker_assignments
+    const result = await db.execute({
+      sql: `UPDATE task_worker_assignments
        SET actual_end_time = ?, actual_output = ?, status = 'completed', notes = COALESCE(?, notes)
        WHERE id = ?`,
-      [timeStr, body.actual_output, body.notes ?? null, assignmentId]
-    );
+      args: [timeStr, body.actual_output, body.notes ?? null, assignmentId]
+    });
 
-    if (result.changes === 0) {
+    if (result.rowsAffected === 0) {
       return Response.json({ error: "Assignment not found" }, { status: 404 });
     }
 
-    const assignment = db.query(`
+    const assignmentResult = await db.execute({
+      sql: `
       SELECT twa.*, w.name as worker_name
       FROM task_worker_assignments twa
       JOIN workers w ON twa.worker_id = w.id
       WHERE twa.id = ?
-    `).get(assignmentId) as AssignmentWithWorker;
+    `,
+      args: [assignmentId]
+    });
+    const assignment = assignmentResult.rows[0] as unknown as AssignmentWithWorker;
 
     return Response.json(assignment);
   } catch (error) {
@@ -385,11 +419,11 @@ async function handleUpdateAssignment(assignmentId: number, request: Request): P
       values.push(body.actual_output);
       
       // Insert history record with timestamp
-      db.run(
-        `INSERT INTO assignment_output_history (assignment_id, output, recorded_at)
+      await db.execute({
+        sql: `INSERT INTO assignment_output_history (assignment_id, output, recorded_at)
          VALUES (?, ?, datetime('now'))`,
-        [assignmentId, body.actual_output]
-      );
+        args: [assignmentId, body.actual_output]
+      });
     }
     if (body.notes !== undefined) {
       updates.push("notes = ?");
@@ -413,21 +447,25 @@ async function handleUpdateAssignment(assignmentId: number, request: Request): P
     }
 
     values.push(assignmentId);
-    const result = db.run(
-      `UPDATE task_worker_assignments SET ${updates.join(", ")} WHERE id = ?`,
-      values
-    );
+    const result = await db.execute({
+      sql: `UPDATE task_worker_assignments SET ${updates.join(", ")} WHERE id = ?`,
+      args: values
+    });
 
-    if (result.changes === 0) {
+    if (result.rowsAffected === 0) {
       return Response.json({ error: "Assignment not found" }, { status: 404 });
     }
 
-    const assignment = db.query(`
+    const assignmentResult = await db.execute({
+      sql: `
       SELECT twa.*, w.name as worker_name
       FROM task_worker_assignments twa
       JOIN workers w ON twa.worker_id = w.id
       WHERE twa.id = ?
-    `).get(assignmentId) as AssignmentWithWorker;
+    `,
+      args: [assignmentId]
+    });
+    const assignment = assignmentResult.rows[0] as unknown as AssignmentWithWorker;
 
     return Response.json(assignment);
   } catch (error) {
@@ -503,17 +541,18 @@ async function handleUpdateEntry(entryId: number, request: Request): Promise<Res
     }
 
     values.push(entryId);
-    const result = db.run(
-      `UPDATE schedule_entries SET ${updates.join(", ")} WHERE id = ?`,
-      values
-    );
+    const result = await db.execute({
+      sql: `UPDATE schedule_entries SET ${updates.join(", ")} WHERE id = ?`,
+      args: values
+    });
 
-    if (result.changes === 0) {
+    if (result.rowsAffected === 0) {
       return Response.json({ error: "Schedule entry not found" }, { status: 404 });
     }
 
     // Return enriched entry
-    const entry = db.query(`
+    const entryResult = await db.execute({
+      sql: `
       SELECT
         se.*,
         ps.name as step_name,
@@ -523,14 +562,17 @@ async function handleUpdateEntry(entryId: number, request: Request): Promise<Res
       FROM schedule_entries se
       JOIN product_steps ps ON se.product_step_id = ps.id
       WHERE se.id = ?
-    `).get(entryId) as (ScheduleEntry & {
+    `,
+      args: [entryId]
+    });
+    const entry = entryResult.rows[0] as unknown as (ScheduleEntry & {
       step_name: string;
       category: string;
       time_per_piece_seconds: number;
       required_skill_category: string;
     });
 
-    const assignments = getAssignmentsForEntry(entryId);
+    const assignments = await getAssignmentsForEntry(entryId);
     return Response.json({
       ...entry,
       computed_status: computeTaskStatus(assignments),
@@ -558,18 +600,22 @@ async function handleCompleteEntryLegacy(entryId: number, request: Request): Pro
     const now = new Date();
     const timeStr = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
 
-    const result = db.run(
-      `UPDATE schedule_entries
+    const result = await db.execute({
+      sql: `UPDATE schedule_entries
        SET actual_end_time = ?, actual_output = ?, status = 'completed', notes = COALESCE(?, notes)
        WHERE id = ?`,
-      [timeStr, body.actual_output, body.notes ?? null, entryId]
-    );
+      args: [timeStr, body.actual_output, body.notes ?? null, entryId]
+    });
 
-    if (result.changes === 0) {
+    if (result.rowsAffected === 0) {
       return Response.json({ error: "Schedule entry not found" }, { status: 404 });
     }
 
-    const entry = db.query("SELECT * FROM schedule_entries WHERE id = ?").get(entryId) as ScheduleEntry;
+    const entryResult = await db.execute({
+      sql: "SELECT * FROM schedule_entries WHERE id = ?",
+      args: [entryId]
+    });
+    const entry = entryResult.rows[0] as unknown as ScheduleEntry;
     return Response.json(entry);
   } catch (error) {
     console.error("Error completing schedule entry:", error);
@@ -578,8 +624,9 @@ async function handleCompleteEntryLegacy(entryId: number, request: Request): Pro
 }
 
 // Get productivity stats for an assignment
-export function getAssignmentProductivity(assignmentId: number) {
-  const data = db.query(`
+export async function getAssignmentProductivity(assignmentId: number) {
+  const dataResult = await db.execute({
+    sql: `
     SELECT
       twa.*,
       ps.time_per_piece_seconds
@@ -587,7 +634,10 @@ export function getAssignmentProductivity(assignmentId: number) {
     JOIN schedule_entries se ON twa.schedule_entry_id = se.id
     JOIN product_steps ps ON se.product_step_id = ps.id
     WHERE twa.id = ?
-  `).get(assignmentId) as (TaskWorkerAssignment & { time_per_piece_seconds: number }) | null;
+  `,
+    args: [assignmentId]
+  });
+  const data = dataResult.rows[0] as unknown as (TaskWorkerAssignment & { time_per_piece_seconds: number }) | undefined;
 
   if (!data || !data.actual_start_time || !data.actual_end_time) {
     return null;
@@ -624,15 +674,19 @@ export function getAssignmentProductivity(assignmentId: number) {
 }
 
 // Legacy function - DEPRECATED: use getAssignmentProductivity instead
-export function getEntryProductivity(entryId: number) {
-  const entry = db.query(`
+export async function getEntryProductivity(entryId: number) {
+  const entryResult = await db.execute({
+    sql: `
     SELECT
       se.*,
       ps.time_per_piece_seconds
     FROM schedule_entries se
     JOIN product_steps ps ON se.product_step_id = ps.id
     WHERE se.id = ?
-  `).get(entryId) as (ScheduleEntry & { time_per_piece_seconds: number }) | null;
+  `,
+    args: [entryId]
+  });
+  const entry = entryResult.rows[0] as unknown as (ScheduleEntry & { time_per_piece_seconds: number }) | undefined;
 
   if (!entry || !entry.actual_start_time || !entry.actual_end_time) {
     return null;

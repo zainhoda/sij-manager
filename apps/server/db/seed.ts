@@ -1,5 +1,5 @@
-import { Database } from "bun:sqlite";
-import { initDatabase } from "./schema";
+import type { Client } from "@libsql/client";
+import { initDatabase, ensureSchema } from "./schema";
 
 interface StepData {
   category: string;
@@ -92,10 +92,10 @@ const TENJAM_STEPS: StepData[] = [
   { category: 'INSPECTION', code: '5.4', name: 'Pack', timeSeconds: 60, skill: 'OTHER', parent: '5', dependsOn: ['5.3'] },
 ];
 
-export function seedDatabase(db: Database) {
+export async function seedDatabase(db: Client) {
   // Check if already seeded
-  const existingProduct = db.query("SELECT id FROM products WHERE name = 'Tenjam Headrest'").get();
-  if (existingProduct) {
+  const existingProduct = await db.execute("SELECT id FROM products WHERE name = 'Tenjam Headrest'");
+  if (existingProduct.rows.length > 0) {
     console.log("Database already seeded");
     return;
   }
@@ -105,10 +105,10 @@ export function seedDatabase(db: Database) {
   // Insert equipment first and track IDs by name
   const equipmentIdsByName: Record<string, number> = {};
   for (const equip of EQUIPMENT) {
-    const result = db.run(
-      "INSERT INTO equipment (name, description) VALUES (?, ?)",
-      [equip.name, equip.description]
-    );
+    const result = await db.execute({
+      sql: "INSERT INTO equipment (name, description) VALUES (?, ?)",
+      args: [equip.name, equip.description]
+    });
     equipmentIdsByName[equip.name] = Number(result.lastInsertRowid);
   }
   console.log(`Seeded ${EQUIPMENT.length} equipment items`);
@@ -116,10 +116,10 @@ export function seedDatabase(db: Database) {
   // Insert workers and track IDs by name
   const workerIdsByName: Record<string, number> = {};
   for (const worker of WORKERS) {
-    const result = db.run(
-      "INSERT INTO workers (name, employee_id, skill_category) VALUES (?, ?, ?)",
-      [worker.name, worker.employee_id, worker.skill_category]
-    );
+    const result = await db.execute({
+      sql: "INSERT INTO workers (name, employee_id, skill_category) VALUES (?, ?, ?)",
+      args: [worker.name, worker.employee_id, worker.skill_category]
+    });
     workerIdsByName[worker.name] = Number(result.lastInsertRowid);
   }
   console.log(`Seeded ${WORKERS.length} workers`);
@@ -131,10 +131,10 @@ export function seedDatabase(db: Database) {
     for (const equipName of worker.certifications) {
       const equipId = equipmentIdsByName[equipName];
       if (equipId !== undefined) {
-        db.run(
-          "INSERT INTO equipment_certifications (worker_id, equipment_id) VALUES (?, ?)",
-          [workerId, equipId]
-        );
+        await db.execute({
+          sql: "INSERT INTO equipment_certifications (worker_id, equipment_id) VALUES (?, ?)",
+          args: [workerId, equipId]
+        });
         certCount++;
       }
     }
@@ -142,11 +142,11 @@ export function seedDatabase(db: Database) {
   console.log(`Seeded ${certCount} equipment certifications`);
 
   // Create Tenjam product
-  const productResult = db.run(
-    "INSERT INTO products (name, description) VALUES (?, ?)",
-    ["Tenjam Headrest", "Headrest cushion with Velcro pockets and hanging storage"]
-  );
-  const productId = productResult.lastInsertRowid;
+  const productResult = await db.execute({
+    sql: "INSERT INTO products (name, description) VALUES (?, ?)",
+    args: ["Tenjam Headrest", "Headrest cushion with Velcro pockets and hanging storage"]
+  });
+  const productId = Number(productResult.lastInsertRowid);
 
   // Insert steps and track their IDs by code
   const stepIdsByCode: Record<string, number> = {};
@@ -154,11 +154,11 @@ export function seedDatabase(db: Database) {
   for (let i = 0; i < TENJAM_STEPS.length; i++) {
     const step = TENJAM_STEPS[i]!;
     const equipmentId = step.equipment ? equipmentIdsByName[step.equipment] : null;
-    const result = db.run(
-      `INSERT INTO product_steps (product_id, name, category, time_per_piece_seconds, sequence, required_skill_category, parent_step_code, equipment_id)
+    const result = await db.execute({
+      sql: `INSERT INTO product_steps (product_id, name, category, time_per_piece_seconds, sequence, required_skill_category, parent_step_code, equipment_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [productId, step.name, step.category, step.timeSeconds, i + 1, step.skill, step.parent, equipmentId]
-    );
+      args: [productId, step.name, step.category, step.timeSeconds, i + 1, step.skill, step.parent, equipmentId]
+    });
     stepIdsByCode[step.code] = Number(result.lastInsertRowid);
   }
 
@@ -169,10 +169,10 @@ export function seedDatabase(db: Database) {
       for (const depCode of step.dependsOn) {
         const depStepId = stepIdsByCode[depCode];
         if (depStepId !== undefined) {
-          db.run(
-            "INSERT INTO step_dependencies (step_id, depends_on_step_id) VALUES (?, ?)",
-            [stepId, depStepId]
-          );
+          await db.execute({
+            sql: "INSERT INTO step_dependencies (step_id, depends_on_step_id) VALUES (?, ?)",
+            args: [stepId, depStepId]
+          });
         }
       }
     }
@@ -184,6 +184,7 @@ export function seedDatabase(db: Database) {
 // Run if called directly
 if (import.meta.main) {
   const db = initDatabase();
-  seedDatabase(db);
+  await ensureSchema(db);
+  await seedDatabase(db);
   db.close();
 }

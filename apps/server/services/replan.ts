@@ -124,28 +124,33 @@ function getWorkDaysBetween(start: Date, end: Date): number {
   return count;
 }
 
-export function generateReplanDraft(scheduleId: number): ReplanResult | null {
+export async function generateReplanDraft(scheduleId: number): Promise<ReplanResult | null> {
   // Get schedule
-  const schedule = db
-    .query("SELECT * FROM schedules WHERE id = ?")
-    .get(scheduleId) as Schedule | null;
+  const scheduleResult = await db.execute({
+    sql: "SELECT * FROM schedules WHERE id = ?",
+    args: [scheduleId]
+  });
+  const schedule = scheduleResult.rows[0] as unknown as Schedule | undefined;
   if (!schedule) return null;
 
   // Get order
-  const order = db
-    .query("SELECT * FROM orders WHERE id = ?")
-    .get(schedule.order_id) as Order | null;
+  const orderResult = await db.execute({
+    sql: "SELECT * FROM orders WHERE id = ?",
+    args: [schedule.order_id]
+  });
+  const order = orderResult.rows[0] as unknown as Order | undefined;
   if (!order) return null;
 
   // Get product name
-  const product = db
-    .query("SELECT name FROM products WHERE id = ?")
-    .get(order.product_id) as { name: string } | null;
+  const productResult = await db.execute({
+    sql: "SELECT name FROM products WHERE id = ?",
+    args: [order.product_id]
+  });
+  const product = productResult.rows[0] as unknown as { name: string } | undefined;
 
   // Get all schedule entries for this schedule
-  const entries = db
-    .query(
-      `
+  const entriesResult = await db.execute({
+    sql: `
     SELECT se.*, ps.name as step_name, ps.category, ps.required_skill_category,
            ps.time_per_piece_seconds, ps.sequence, ps.equipment_id,
            w.name as worker_name
@@ -154,9 +159,10 @@ export function generateReplanDraft(scheduleId: number): ReplanResult | null {
     LEFT JOIN workers w ON se.worker_id = w.id
     WHERE se.schedule_id = ?
     ORDER BY se.date, se.start_time
-  `
-    )
-    .all(scheduleId) as (ScheduleEntry & {
+  `,
+    args: [scheduleId]
+  });
+  const entries = entriesResult.rows as unknown as (ScheduleEntry & {
     step_name: string;
     category: string;
     required_skill_category: "SEWING" | "OTHER";
@@ -175,17 +181,17 @@ export function generateReplanDraft(scheduleId: number): ReplanResult | null {
   const remainingOutput = totalOutput - completedOutput;
 
   // Get product steps with their info for scheduling
-  const steps = db
-    .query(
-      `
+  const stepsResult = await db.execute({
+    sql: `
     SELECT ps.*,
            (SELECT GROUP_CONCAT(depends_on_step_id) FROM step_dependencies WHERE step_id = ps.id) as deps
     FROM product_steps ps
     WHERE ps.product_id = ?
     ORDER BY ps.sequence
-  `
-    )
-    .all(order.product_id) as (ProductStep & { deps: string | null })[];
+  `,
+    args: [order.product_id]
+  });
+  const steps = stepsResult.rows as unknown as (ProductStep & { deps: string | null })[];
 
   // Build steps map
   const stepsMap = new Map<number, StepWithDependencies>();
@@ -197,9 +203,8 @@ export function generateReplanDraft(scheduleId: number): ReplanResult | null {
   }
 
   // Get all available workers
-  const workers = db
-    .query("SELECT id, name, skill_category FROM workers WHERE status = 'active'")
-    .all() as { id: number; name: string; skill_category: string }[];
+  const workersResult = await db.execute("SELECT id, name, skill_category FROM workers WHERE status = 'active'");
+  const workers = workersResult.rows as unknown as { id: number; name: string; skill_category: string }[];
 
   // Get starting point
   const startPoint = getReplanStartPoint();
@@ -274,7 +279,7 @@ export function generateReplanDraft(scheduleId: number): ReplanResult | null {
       // Find qualified worker
       const startTimeStr = minutesToTime(currentTimeMinutes);
       const endTimeStr = minutesToTime(endTimeMinutes);
-      const workerAssignment = findQualifiedWorker(
+      const workerAssignment = await findQualifiedWorker(
         step as StepWithDependencies,
         dateStr,
         startTimeStr,
@@ -370,7 +375,7 @@ export function generateReplanDraft(scheduleId: number): ReplanResult | null {
       );
 
       // Find qualified worker for overtime
-      const workerAssignment = findQualifiedWorker(
+      const workerAssignment = await findQualifiedWorker(
         stepForOvertime as StepWithDependencies,
         dateStr,
         overtimeStart,
@@ -419,36 +424,38 @@ export function generateReplanDraft(scheduleId: number): ReplanResult | null {
   };
 }
 
-export function commitReplan(
+export async function commitReplan(
   scheduleId: number,
   request: CommitReplanRequest
-): Schedule | null {
+): Promise<Schedule | null> {
   const { entries, newWorkers } = request;
 
   // Verify schedule exists
-  const schedule = db
-    .query("SELECT * FROM schedules WHERE id = ?")
-    .get(scheduleId) as Schedule | null;
+  const scheduleResult = await db.execute({
+    sql: "SELECT * FROM schedules WHERE id = ?",
+    args: [scheduleId]
+  });
+  const schedule = scheduleResult.rows[0] as unknown as Schedule | undefined;
   if (!schedule) return null;
 
   // Create any new workers
   const createdWorkerIds = new Map<string, number>();
   if (newWorkers && newWorkers.length > 0) {
     for (const worker of newWorkers) {
-      const result = db.run(
-        "INSERT INTO workers (name, skill_category, status) VALUES (?, ?, 'active')",
-        [worker.name, worker.skill_category]
-      );
+      const result = await db.execute({
+        sql: "INSERT INTO workers (name, skill_category, status) VALUES (?, ?, 'active')",
+        args: [worker.name, worker.skill_category]
+      });
       // Track by name for assignment
       createdWorkerIds.set(worker.name, Number(result.lastInsertRowid));
     }
   }
 
   // Delete existing incomplete entries
-  db.run(
-    "DELETE FROM schedule_entries WHERE schedule_id = ? AND status != 'completed'",
-    [scheduleId]
-  );
+  await db.execute({
+    sql: "DELETE FROM schedule_entries WHERE schedule_id = ? AND status != 'completed'",
+    args: [scheduleId]
+  });
 
   // Insert new entries
   for (const entry of entries) {
@@ -458,11 +465,11 @@ export function commitReplan(
       workerId = createdWorkerIds.get(entry.worker_name)!;
     }
 
-    db.run(
-      `INSERT INTO schedule_entries
+    await db.execute({
+      sql: `INSERT INTO schedule_entries
        (schedule_id, product_step_id, worker_id, date, start_time, end_time, planned_output, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'not_started')`,
-      [
+      args: [
         scheduleId,
         entry.product_step_id,
         workerId,
@@ -471,8 +478,12 @@ export function commitReplan(
         entry.end_time,
         entry.planned_output,
       ]
-    );
+    });
   }
 
-  return db.query("SELECT * FROM schedules WHERE id = ?").get(scheduleId) as Schedule;
+  const finalScheduleResult = await db.execute({
+    sql: "SELECT * FROM schedules WHERE id = ?",
+    args: [scheduleId]
+  });
+  return finalScheduleResult.rows[0] as unknown as Schedule;
 }
