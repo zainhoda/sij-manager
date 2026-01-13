@@ -7,8 +7,11 @@ export interface TimeSlot {
   endTime: string;
   title: string;
   category?: CategoryType;
-  workerName?: string;
+  workerName?: string; // Legacy single worker
+  workerNames?: string[]; // New: array of worker names for multi-worker tasks
+  workerCount?: number; // Number of assigned workers
   progress?: number; // 0-100
+  orderColor?: string | null; // Color for order distinction
 }
 
 interface DayColumnProps {
@@ -110,18 +113,42 @@ export function DayColumn({
                   borderLeftColor: getCategoryColor(slot.category),
                   borderLeftWidth: 3,
                 },
+                slot.orderColor && {
+                  borderRightColor: slot.orderColor,
+                  borderRightWidth: 4,
+                },
               ]}
               onPress={() => onSlotPress?.(slot)}
             >
-              <Text style={styles.slotTime}>
-                {slot.startTime} - {slot.endTime}
-              </Text>
+              <View style={styles.slotHeader}>
+                <Text style={styles.slotTime}>
+                  {slot.startTime} - {slot.endTime}
+                </Text>
+                {slot.orderColor && (
+                  <View
+                    style={[styles.orderDot, { backgroundColor: slot.orderColor }]}
+                  />
+                )}
+              </View>
               <Text style={styles.slotTitle} numberOfLines={2}>
                 {slot.title}
               </Text>
-              {slot.workerName && (
+              {/* Show worker info - support both single and multiple workers */}
+              {(slot.workerNames && slot.workerNames.length > 0) ? (
+                <Text style={styles.slotWorker} numberOfLines={1}>
+                  {slot.workerNames.length === 1
+                    ? slot.workerNames[0]
+                    : slot.workerNames.length <= 2
+                    ? slot.workerNames.join(', ')
+                    : `${slot.workerNames[0]} +${slot.workerNames.length - 1}`}
+                </Text>
+              ) : slot.workerCount && slot.workerCount > 0 ? (
+                <Text style={styles.slotWorker}>
+                  {slot.workerCount} worker{slot.workerCount > 1 ? 's' : ''}
+                </Text>
+              ) : slot.workerName ? (
                 <Text style={styles.slotWorker}>{slot.workerName}</Text>
-              )}
+              ) : null}
               {slot.progress !== undefined && (
                 <View style={styles.progressContainer}>
                   <View style={styles.progressBar}>
@@ -210,6 +237,16 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     padding: spacing.sm,
     marginBottom: spacing.xs,
+  },
+  slotHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  orderDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
   slotTime: {
     ...typography.caption,

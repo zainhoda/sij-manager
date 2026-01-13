@@ -1,12 +1,20 @@
 import { useState, useEffect, useCallback } from 'react';
-import { StyleSheet, ScrollView, RefreshControl, ActivityIndicator } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { StyleSheet, ScrollView, RefreshControl, ActivityIndicator, Pressable } from 'react-native';
+import { useFocusEffect, router } from 'expo-router';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { RefreshCw } from 'lucide-react-native';
 
 import { View, Text } from '@/components/Themed';
-import { WeekCalendar, NoScheduleEmpty, Button, Card, ProductionLogSheet } from '@/components';
+import { WeekCalendar, NoScheduleEmpty, Button, Card, ProductionLogSheet, FilterChipGroup } from '@/components';
 import { TimeSlot } from '@/components/DayColumn';
 import { colors, spacing, typography, CategoryType } from '@/theme';
 import { getSchedules, getScheduleEntry, Schedule, ScheduleEntry } from '@/api/client';
+
+interface OrderFilter {
+  id: number;
+  name: string;
+  color: string | null;
+}
 
 function getMonday(date: Date): Date {
   const d = new Date(date);
@@ -28,7 +36,7 @@ function mapCategoryToType(category: string): CategoryType {
   return mapping[category] || 'sewing';
 }
 
-function convertEntriesToSlots(entries: ScheduleEntry[]): TimeSlot[] {
+function convertEntriesToSlots(entries: ScheduleEntry[], scheduleOrderColor?: string | null): TimeSlot[] {
   return entries.map((entry) => ({
     id: entry.id.toString(),
     startTime: entry.start_time,
@@ -38,10 +46,11 @@ function convertEntriesToSlots(entries: ScheduleEntry[]): TimeSlot[] {
     progress: entry.planned_output > 0
       ? Math.round((entry.actual_output / entry.planned_output) * 100)
       : 0,
+    orderColor: entry.order_color || scheduleOrderColor,
   }));
 }
 
-export default function ScheduleScreen() {
+export default function AdminScheduleScreen() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -50,6 +59,13 @@ export default function ScheduleScreen() {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [selectedEntry, setSelectedEntry] = useState<ScheduleEntry | null>(null);
   const [logSheetVisible, setLogSheetVisible] = useState(false);
+  const [selectedOrderId, setSelectedOrderId] = useState<number | null>(null);
+
+  const orderFilters: OrderFilter[] = schedules.map((s) => ({
+    id: s.order_id,
+    name: s.product_name || `Order #${s.order_id}`,
+    color: s.order_color || null,
+  }));
 
   const fetchSchedules = async () => {
     try {
@@ -92,21 +108,33 @@ export default function ScheduleScreen() {
 
   const handleEntryUpdated = () => {
     fetchSchedules();
-    // Refresh the selected entry too
     if (selectedEntry) {
       getScheduleEntry(selectedEntry.id).then(setSelectedEntry).catch(console.error);
     }
   };
 
-  // Combine all schedule entries by date
+  const filteredSchedules = selectedOrderId
+    ? schedules.filter((s) => s.order_id === selectedOrderId)
+    : schedules;
+
+  const selectedSchedule = selectedOrderId
+    ? schedules.find((s) => s.order_id === selectedOrderId)
+    : null;
+
+  const handleReplan = () => {
+    if (selectedSchedule) {
+      router.push(`/admin/replan/${selectedSchedule.id}`);
+    }
+  };
+
   const slotsByDate: Record<string, TimeSlot[]> = {};
-  for (const schedule of schedules) {
+  for (const schedule of filteredSchedules) {
     if (schedule.entriesByDate) {
       for (const [date, entries] of Object.entries(schedule.entriesByDate)) {
         if (!slotsByDate[date]) {
           slotsByDate[date] = [];
         }
-        slotsByDate[date].push(...convertEntriesToSlots(entries));
+        slotsByDate[date].push(...convertEntriesToSlots(entries, schedule.order_color));
       }
     }
   }
@@ -139,12 +167,59 @@ export default function ScheduleScreen() {
         }
       >
         <NoScheduleEmpty />
+        <Pressable onPress={() => router.push('/scheduling')} style={styles.emptyPlanningCard}>
+          <Card style={styles.planningCard}>
+            <View style={styles.planningContent}>
+              <View style={styles.planningIcon}>
+                <FontAwesome name="line-chart" size={20} color={colors.white} />
+              </View>
+              <View style={styles.planningText}>
+                <Text style={styles.planningTitle}>8-Week Planning</Text>
+                <Text style={styles.planningSubtitle}>
+                  View capacity, deadline risks & what-if scenarios
+                </Text>
+              </View>
+              <FontAwesome name="chevron-right" size={16} color={colors.textMuted} />
+            </View>
+          </Card>
+        </Pressable>
       </ScrollView>
     );
   }
 
   return (
     <View style={styles.container}>
+      {orderFilters.length > 0 && (
+        <View style={styles.filterContainer}>
+          <View style={styles.filterRow}>
+            <View style={styles.filterChips}>
+              <FilterChipGroup
+                options={[
+                  { value: 'all', label: 'All Orders' },
+                  ...orderFilters.map((o) => ({
+                    value: o.id.toString(),
+                    label: o.name,
+                    color: o.color || undefined,
+                  })),
+                ]}
+                selected={selectedOrderId ? [selectedOrderId.toString()] : ['all']}
+                onChange={(values) => {
+                  const value = values[values.length - 1] || 'all';
+                  setSelectedOrderId(value === 'all' ? null : parseInt(value, 10));
+                }}
+                multiple={false}
+              />
+            </View>
+            {selectedSchedule && (
+              <Pressable style={styles.replanButton} onPress={handleReplan}>
+                <RefreshCw size={16} color={colors.navy} />
+                <Text style={styles.replanText}>Re-plan</Text>
+              </Pressable>
+            )}
+          </View>
+        </View>
+      )}
+
       <WeekCalendar
         weekStart={weekStart}
         slotsByDate={slotsByDate}
@@ -156,7 +231,6 @@ export default function ScheduleScreen() {
         style={styles.calendar}
       />
 
-      {/* Summary stats */}
       <View style={styles.summaryContainer}>
         <Card style={styles.summaryCard}>
           <Text style={styles.summaryLabel}>Active Orders</Text>
@@ -170,7 +244,23 @@ export default function ScheduleScreen() {
         </Card>
       </View>
 
-      {/* Production logging bottom sheet */}
+      <Pressable onPress={() => router.push('/scheduling')}>
+        <Card style={styles.planningCard}>
+          <View style={styles.planningContent}>
+            <View style={styles.planningIcon}>
+              <FontAwesome name="line-chart" size={20} color={colors.white} />
+            </View>
+            <View style={styles.planningText}>
+              <Text style={styles.planningTitle}>8-Week Planning</Text>
+              <Text style={styles.planningSubtitle}>
+                View capacity, deadline risks & what-if scenarios
+              </Text>
+            </View>
+            <FontAwesome name="chevron-right" size={16} color={colors.textMuted} />
+          </View>
+        </Card>
+      </Pressable>
+
       <ProductionLogSheet
         visible={logSheetVisible}
         onClose={() => setLogSheetVisible(false)}
@@ -186,6 +276,37 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.cream,
   },
+  filterContainer: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.white,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  filterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  filterChips: {
+    flex: 1,
+  },
+  replanButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    backgroundColor: colors.gray[100],
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  replanText: {
+    ...typography.caption,
+    fontWeight: '600',
+    color: colors.navy,
+  },
   centered: {
     flex: 1,
     alignItems: 'center',
@@ -197,6 +318,10 @@ const styles = StyleSheet.create({
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
+    paddingBottom: spacing.xl,
+  },
+  emptyPlanningCard: {
+    marginTop: spacing.xl,
   },
   loadingText: {
     ...typography.body,
@@ -229,5 +354,38 @@ const styles = StyleSheet.create({
     ...typography.h2,
     color: colors.navy,
     marginTop: spacing.xs,
+  },
+  planningCard: {
+    marginHorizontal: spacing.md,
+    marginBottom: spacing.md,
+    backgroundColor: colors.navy + '08',
+    borderWidth: 1,
+    borderColor: colors.navy + '20',
+  },
+  planningContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  planningIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.navy,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  planningText: {
+    flex: 1,
+  },
+  planningTitle: {
+    ...typography.body,
+    fontWeight: '600',
+    color: colors.navy,
+  },
+  planningSubtitle: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    marginTop: 2,
   },
 });

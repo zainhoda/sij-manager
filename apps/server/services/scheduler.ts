@@ -1,8 +1,9 @@
 import { db } from "../db";
-import type { Order, ProductStep, Schedule, ScheduleEntry, Worker } from "../db/schema";
+import type { Order, ProductStep, Schedule, ScheduleEntry, Worker, TaskWorkerAssignment } from "../db/schema";
+import { getWorkerProficiencyLevel, PROFICIENCY_MULTIPLIERS } from "../routes/proficiencies";
 
 // Work day configuration
-const WORK_DAY = {
+export const WORK_DAY = {
   morningStart: "07:00",
   lunchStart: "11:00",
   lunchEnd: "11:30",
@@ -11,7 +12,17 @@ const WORK_DAY = {
   totalMinutes: 480,
 };
 
-interface StepWithDependencies extends ProductStep {
+// Multi-worker assignment configuration
+export const MULTI_WORKER_CONFIG = {
+  // Assign multiple workers if task duration exceeds this threshold (in minutes)
+  durationThresholdMinutes: 120, // 2 hours
+  // Maximum workers to assign per task
+  maxWorkersPerTask: 3,
+  // Assign extra workers if deadline is within this many days
+  urgentDeadlineDays: 3,
+};
+
+export interface StepWithDependencies extends ProductStep {
   dependencies: number[];
 }
 
@@ -26,15 +37,18 @@ interface ScheduleBlock {
 interface WorkerAssignment {
   workerId: number;
   workerName: string;
+  score: number;
+  proficiencyLevel: number;
 }
 
-// Find a qualified worker for a schedule entry
-function findQualifiedWorker(
+// Find qualified workers for a schedule entry (returns multiple workers sorted by score)
+export function findQualifiedWorkers(
   step: StepWithDependencies,
   date: string,
   startTime: string,
-  endTime: string
-): WorkerAssignment | null {
+  endTime: string,
+  maxWorkers: number = MULTI_WORKER_CONFIG.maxWorkersPerTask
+): WorkerAssignment[] {
   // Get all active workers with matching skill category
   const candidateWorkers = db.query(`
     SELECT * FROM workers
@@ -43,7 +57,7 @@ function findQualifiedWorker(
   `).all(step.required_skill_category) as Worker[];
 
   if (candidateWorkers.length === 0) {
-    return null;
+    return [];
   }
 
   // If step requires equipment, filter to workers certified for it
@@ -59,44 +73,113 @@ function findQualifiedWorker(
     });
 
     if (qualifiedWorkers.length === 0) {
-      return null;
+      return [];
     }
   }
 
-  // Filter to workers available during the time slot (not already scheduled)
+  // Filter to workers available during the time slot
+  // Check both legacy schedule_entries.worker_id and new task_worker_assignments
   const availableWorkers = qualifiedWorkers.filter(worker => {
-    // Check for overlapping schedule entries
-    const overlap = db.query(`
+    // Check legacy schedule_entries overlap
+    const legacyOverlap = db.query(`
       SELECT id FROM schedule_entries
       WHERE worker_id = ?
       AND date = ?
       AND NOT (end_time <= ? OR start_time >= ?)
     `).get(worker.id, date, startTime, endTime);
-    return overlap === null;
+
+    // Check new task_worker_assignments overlap
+    const assignmentOverlap = db.query(`
+      SELECT twa.id FROM task_worker_assignments twa
+      JOIN schedule_entries se ON twa.schedule_entry_id = se.id
+      WHERE twa.worker_id = ?
+      AND se.date = ?
+      AND NOT (se.end_time <= ? OR se.start_time >= ?)
+    `).get(worker.id, date, startTime, endTime);
+
+    return legacyOverlap === null && assignmentOverlap === null;
   });
 
   if (availableWorkers.length === 0) {
-    return null;
+    return [];
   }
 
-  // Score remaining candidates by workload (fewer assignments = higher priority)
+  // Score remaining candidates by proficiency (higher is better) and workload (lower is better)
   const scoredWorkers = availableWorkers.map(worker => {
-    const workload = db.query(`
+    // Count legacy assignments
+    const legacyWorkload = db.query(`
       SELECT COUNT(*) as count FROM schedule_entries
       WHERE worker_id = ? AND date = ?
     `).get(worker.id, date) as { count: number };
-    return { worker, score: workload.count };
+
+    // Count new assignments
+    const newWorkload = db.query(`
+      SELECT COUNT(*) as count FROM task_worker_assignments twa
+      JOIN schedule_entries se ON twa.schedule_entry_id = se.id
+      WHERE twa.worker_id = ? AND se.date = ?
+    `).get(worker.id, date) as { count: number };
+
+    const totalWorkload = legacyWorkload.count + newWorkload.count;
+
+    // Get proficiency level for this worker-step combination
+    const proficiencyLevel = getWorkerProficiencyLevel(worker.id, step.id);
+
+    // Score: higher proficiency is better, lower workload is better
+    // Proficiency weight: 10 points per level (so level 5 = 50, level 1 = 10)
+    // Workload penalty: -5 per existing assignment
+    const score = (proficiencyLevel * 10) - (totalWorkload * 5);
+
+    return {
+      workerId: worker.id,
+      workerName: worker.name,
+      score,
+      proficiencyLevel,
+    };
   });
 
-  // Sort by score (lowest first)
-  scoredWorkers.sort((a, b) => a.score - b.score);
+  // Sort by score (highest first for best candidates)
+  scoredWorkers.sort((a, b) => b.score - a.score);
 
-  const bestWorker = scoredWorkers[0]!.worker;
-  return { workerId: bestWorker.id, workerName: bestWorker.name };
+  // Return top N workers
+  return scoredWorkers.slice(0, maxWorkers);
+}
+
+// Legacy function for backwards compatibility - returns single best worker
+export function findQualifiedWorker(
+  step: StepWithDependencies,
+  date: string,
+  startTime: string,
+  endTime: string
+): { workerId: number; workerName: string } | null {
+  const workers = findQualifiedWorkers(step, date, startTime, endTime, 1);
+  return workers.length > 0 ? { workerId: workers[0]!.workerId, workerName: workers[0]!.workerName } : null;
+}
+
+// Determine how many workers to assign based on task characteristics
+function calculateWorkersNeeded(
+  taskDurationMinutes: number,
+  daysUntilDeadline: number
+): number {
+  let workersNeeded = 1;
+
+  // Large task: add workers
+  if (taskDurationMinutes >= MULTI_WORKER_CONFIG.durationThresholdMinutes) {
+    workersNeeded = Math.min(
+      Math.ceil(taskDurationMinutes / MULTI_WORKER_CONFIG.durationThresholdMinutes),
+      MULTI_WORKER_CONFIG.maxWorkersPerTask
+    );
+  }
+
+  // Urgent deadline: try to add one more worker
+  if (daysUntilDeadline <= MULTI_WORKER_CONFIG.urgentDeadlineDays) {
+    workersNeeded = Math.min(workersNeeded + 1, MULTI_WORKER_CONFIG.maxWorkersPerTask);
+  }
+
+  return workersNeeded;
 }
 
 // Convert time string to minutes since midnight
-function timeToMinutes(time: string): number {
+export function timeToMinutes(time: string): number {
   const parts = time.split(":").map(Number);
   const hours = parts[0] ?? 0;
   const mins = parts[1] ?? 0;
@@ -104,14 +187,14 @@ function timeToMinutes(time: string): number {
 }
 
 // Convert minutes since midnight to time string
-function minutesToTime(minutes: number): string {
+export function minutesToTime(minutes: number): string {
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
   return `${hours.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}`;
 }
 
 // Get available work minutes for a given time slot, accounting for lunch
-function getWorkMinutes(startMinutes: number, endMinutes: number): number {
+export function getWorkMinutes(startMinutes: number, endMinutes: number): number {
   const lunchStart = timeToMinutes(WORK_DAY.lunchStart);
   const lunchEnd = timeToMinutes(WORK_DAY.lunchEnd);
 
@@ -134,7 +217,7 @@ function getWorkMinutes(startMinutes: number, endMinutes: number): number {
 }
 
 // Advance time by given minutes, skipping lunch
-function advanceTime(startMinutes: number, minutesToAdd: number): number {
+export function advanceTime(startMinutes: number, minutesToAdd: number): number {
   const lunchStart = timeToMinutes(WORK_DAY.lunchStart);
   const lunchEnd = timeToMinutes(WORK_DAY.lunchEnd);
   const dayEnd = timeToMinutes(WORK_DAY.dayEnd);
@@ -193,6 +276,11 @@ export function generateSchedule(orderId: number): Schedule | null {
   const order = db.query("SELECT * FROM orders WHERE id = ?").get(orderId) as Order | null;
   if (!order) return null;
 
+  // Calculate days until deadline
+  const dueDate = new Date(order.due_date);
+  const today = new Date();
+  const daysUntilDeadline = Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
   // Get product steps with dependencies
   const steps = db.query(`
     SELECT * FROM product_steps
@@ -214,7 +302,6 @@ export function generateSchedule(orderId: number): Schedule | null {
   }
 
   // Calculate week start (Monday of current week or next Monday if today is weekend)
-  const today = new Date();
   const dayOfWeek = today.getDay();
   const daysUntilMonday = dayOfWeek === 0 ? 1 : (dayOfWeek === 6 ? 2 : (1 - dayOfWeek + 7) % 7 || 7);
   const weekStart = new Date(today);
@@ -257,8 +344,12 @@ export function generateSchedule(orderId: number): Schedule | null {
 
       // Calculate total time needed for this step
       const totalSecondsNeeded = step.time_per_piece_seconds * order.quantity;
-      let remainingMinutes = Math.ceil(totalSecondsNeeded / 60);
+      const totalMinutesNeeded = Math.ceil(totalSecondsNeeded / 60);
+      let remainingMinutes = totalMinutesNeeded;
       let outputScheduled = 0;
+
+      // Determine how many workers to assign
+      const workersNeeded = calculateWorkersNeeded(totalMinutesNeeded, daysUntilDeadline);
 
       // Schedule this step across days as needed
       while (remainingMinutes > 0) {
@@ -286,15 +377,15 @@ export function generateSchedule(orderId: number): Schedule | null {
         const outputInBlock = Math.floor(secondsInBlock / step.time_per_piece_seconds);
         outputScheduled += outputInBlock;
 
-        // Find a qualified worker for this time slot
+        // Find qualified workers for this time slot
         const startTimeStr = minutesToTime(currentTimeMinutes);
         const endTimeStr = minutesToTime(endTimeMinutes);
-        const workerAssignment = findQualifiedWorker(step, dateStr, startTimeStr, endTimeStr);
+        const qualifiedWorkers = findQualifiedWorkers(step, dateStr, startTimeStr, endTimeStr, workersNeeded);
 
-        // Create schedule entry (with or without worker assignment)
-        db.run(
-          `INSERT INTO schedule_entries (schedule_id, product_step_id, date, start_time, end_time, planned_output, worker_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        // Create schedule entry (without worker_id - using new assignments table)
+        const entryResult = db.run(
+          `INSERT INTO schedule_entries (schedule_id, product_step_id, date, start_time, end_time, planned_output)
+           VALUES (?, ?, ?, ?, ?, ?)`,
           [
             scheduleId,
             stepId,
@@ -302,9 +393,17 @@ export function generateSchedule(orderId: number): Schedule | null {
             startTimeStr,
             endTimeStr,
             outputInBlock,
-            workerAssignment?.workerId ?? null,
           ]
         );
+        const entryId = Number(entryResult.lastInsertRowid);
+
+        // Create worker assignments
+        for (const worker of qualifiedWorkers) {
+          db.run(
+            "INSERT INTO task_worker_assignments (schedule_entry_id, worker_id) VALUES (?, ?)",
+            [entryId, worker.workerId]
+          );
+        }
 
         remainingMinutes -= minutesToUse;
         currentTimeMinutes = endTimeMinutes;
@@ -344,9 +443,46 @@ export function generateSchedule(orderId: number): Schedule | null {
   return db.query("SELECT * FROM schedules WHERE id = ?").get(scheduleId) as Schedule;
 }
 
-// Get schedule with all entries
+// Helper to get assignments for an entry
+function getAssignmentsForEntry(entryId: number) {
+  return db.query(`
+    SELECT
+      twa.*,
+      w.name as worker_name
+    FROM task_worker_assignments twa
+    JOIN workers w ON twa.worker_id = w.id
+    WHERE twa.schedule_entry_id = ?
+    ORDER BY twa.assigned_at
+  `).all(entryId) as (TaskWorkerAssignment & { worker_name: string })[];
+}
+
+// Helper to compute task status from assignments
+function computeTaskStatus(assignments: { status: string }[]): 'not_started' | 'in_progress' | 'completed' {
+  if (assignments.length === 0) {
+    return 'not_started';
+  }
+
+  const allCompleted = assignments.every(a => a.status === 'completed');
+  if (allCompleted) {
+    return 'completed';
+  }
+
+  const anyStarted = assignments.some(a => a.status === 'in_progress' || a.status === 'completed');
+  if (anyStarted) {
+    return 'in_progress';
+  }
+
+  return 'not_started';
+}
+
+// Get schedule with all entries and assignments
 export function getScheduleWithEntries(scheduleId: number) {
-  const schedule = db.query("SELECT * FROM schedules WHERE id = ?").get(scheduleId) as Schedule | null;
+  const schedule = db.query(`
+    SELECT s.*, o.color as order_color
+    FROM schedules s
+    JOIN orders o ON s.order_id = o.id
+    WHERE s.id = ?
+  `).get(scheduleId) as (Schedule & { order_color: string | null }) | null;
   if (!schedule) return null;
 
   const entries = db.query(`
@@ -357,11 +493,12 @@ export function getScheduleWithEntries(scheduleId: number) {
       ps.required_skill_category,
       ps.equipment_id,
       e.name as equipment_name,
-      w.name as worker_name
+      o.color as order_color
     FROM schedule_entries se
     JOIN product_steps ps ON se.product_step_id = ps.id
     LEFT JOIN equipment e ON ps.equipment_id = e.id
-    LEFT JOIN workers w ON se.worker_id = w.id
+    JOIN schedules s ON se.schedule_id = s.id
+    JOIN orders o ON s.order_id = o.id
     WHERE se.schedule_id = ?
     ORDER BY se.date, se.start_time
   `).all(scheduleId) as (ScheduleEntry & {
@@ -370,12 +507,29 @@ export function getScheduleWithEntries(scheduleId: number) {
     required_skill_category: string;
     equipment_id: number | null;
     equipment_name: string | null;
-    worker_name: string | null;
+    order_color: string | null;
   })[];
 
+  // Enrich entries with assignments
+  const enrichedEntries = entries.map(entry => {
+    const assignments = getAssignmentsForEntry(entry.id);
+    const totalActualOutput = assignments.reduce((sum, a) => sum + a.actual_output, 0);
+
+    return {
+      ...entry,
+      computed_status: computeTaskStatus(assignments),
+      total_actual_output: totalActualOutput,
+      assignments,
+      // Legacy: build worker_name from assignments for backwards compatibility
+      worker_name: assignments.length > 0
+        ? assignments.map(a => a.worker_name).join(', ')
+        : null,
+    };
+  });
+
   // Group entries by date
-  const entriesByDate: Record<string, typeof entries> = {};
-  for (const entry of entries) {
+  const entriesByDate: Record<string, typeof enrichedEntries> = {};
+  for (const entry of enrichedEntries) {
     if (!entriesByDate[entry.date]) {
       entriesByDate[entry.date] = [];
     }
@@ -384,7 +538,7 @@ export function getScheduleWithEntries(scheduleId: number) {
 
   return {
     ...schedule,
-    entries,
+    entries: enrichedEntries,
     entriesByDate,
   };
 }

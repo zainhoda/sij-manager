@@ -4,9 +4,9 @@ import { Link, useFocusEffect } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 import { View, Text } from '@/components/Themed';
-import { Card, Button, NoOrdersEmpty, CategoryBadge } from '@/components';
+import { Card, Button, NoOrdersEmpty } from '@/components';
 import { colors, spacing, typography } from '@/theme';
-import { getOrders, Order, generateSchedule, getSchedule } from '@/api/client';
+import { getOrders, Order, generateSchedule } from '@/api/client';
 
 const STATUS_COLORS: Record<string, string> = {
   pending: colors.status.warning,
@@ -31,7 +31,7 @@ function formatDate(dateStr: string): string {
   });
 }
 
-export default function OrdersScreen() {
+export default function AdminOrdersScreen() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);

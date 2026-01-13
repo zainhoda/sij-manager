@@ -5,6 +5,9 @@ import { handleScheduleEntries } from "./routes/schedule-entries";
 import { handleEquipment } from "./routes/equipment";
 import { handleWorkers } from "./routes/workers";
 import { handleCertifications } from "./routes/certifications";
+import { handleProficiencies } from "./routes/proficiencies";
+import { handleAnalytics } from "./routes/analytics";
+import { handleScheduling } from "./routes/scheduling";
 
 // Initialize database (this also seeds it)
 import "./db";
@@ -87,6 +90,21 @@ const server = Bun.serve({
       }
 
       response = await handleCertifications(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
+
+      response = await handleProficiencies(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
+
+      response = await handleAnalytics(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
+
+      response = await handleScheduling(request);
       if (response) {
         return addCorsHeaders(response);
       }

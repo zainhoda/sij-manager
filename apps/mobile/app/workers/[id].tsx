@@ -4,9 +4,17 @@ import { useLocalSearchParams, router, Stack } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 import { View, Text } from '@/components/Themed';
-import { Card, Button, WorkerBadge } from '@/components';
+import { Card, Button, WorkerBadge, ProficiencyEditor } from '@/components';
 import { colors, spacing, typography } from '@/theme';
-import { getWorkerById, deleteWorker, updateWorker, Worker } from '@/api/client';
+import {
+  getWorkerById,
+  deleteWorker,
+  updateWorker,
+  getWorkerProficiencies,
+  updateProficiency,
+  Worker,
+  WorkerProficienciesResponse,
+} from '@/api/client';
 
 const STATUS_COLORS: Record<string, string> = {
   active: colors.status.success,
@@ -28,6 +36,7 @@ const SKILL_LABELS: Record<string, string> = {
 export default function WorkerDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [worker, setWorker] = useState<Worker | null>(null);
+  const [proficiencies, setProficiencies] = useState<WorkerProficienciesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,8 +45,12 @@ export default function WorkerDetailScreen() {
     if (!id) return;
     try {
       setError(null);
-      const data = await getWorkerById(parseInt(id));
-      setWorker(data);
+      const [workerData, profData] = await Promise.all([
+        getWorkerById(parseInt(id)),
+        getWorkerProficiencies(parseInt(id)),
+      ]);
+      setWorker(workerData);
+      setProficiencies(profData);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load worker');
     } finally {
@@ -49,6 +62,22 @@ export default function WorkerDetailScreen() {
   useEffect(() => {
     fetchWorker();
   }, [id]);
+
+  const handleProficiencyUpdate = async (productStepId: number, level: 1 | 2 | 3 | 4 | 5) => {
+    if (!id) return;
+    try {
+      await updateProficiency({
+        worker_id: parseInt(id),
+        product_step_id: productStepId,
+        level,
+      });
+      // Refresh proficiencies after update
+      const profData = await getWorkerProficiencies(parseInt(id));
+      setProficiencies(profData);
+    } catch (err) {
+      Alert.alert('Error', err instanceof Error ? err.message : 'Failed to update proficiency');
+    }
+  };
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -174,6 +203,30 @@ export default function WorkerDetailScreen() {
         </Card>
 
         <Card style={styles.sectionCard}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Step Proficiencies</Text>
+            <Button
+              title="View Productivity"
+              variant="ghost"
+              size="small"
+              onPress={() => router.push(`/workers/${id}/productivity`)}
+            />
+          </View>
+          <Text style={styles.proficiencyHint}>
+            Adjust skill levels (1-5) for each production step
+          </Text>
+          {proficiencies ? (
+            <ProficiencyEditor
+              workerId={worker.id}
+              proficienciesData={proficiencies}
+              onUpdate={handleProficiencyUpdate}
+            />
+          ) : (
+            <ActivityIndicator size="small" color={colors.navy} />
+          )}
+        </Card>
+
+        <Card style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Status</Text>
           <View style={styles.statusButtons}>
             {(['active', 'on_leave', 'inactive'] as Worker['status'][]).map((status) => (
@@ -281,6 +334,12 @@ const styles = StyleSheet.create({
     marginHorizontal: spacing.md,
     marginBottom: spacing.md,
   },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
   sectionTitle: {
     ...typography.label,
     color: colors.textSecondary,
@@ -303,6 +362,11 @@ const styles = StyleSheet.create({
     ...typography.body,
     color: colors.textMuted,
     fontStyle: 'italic',
+  },
+  proficiencyHint: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    marginBottom: spacing.md,
   },
   statusButtons: {
     flexDirection: 'row',

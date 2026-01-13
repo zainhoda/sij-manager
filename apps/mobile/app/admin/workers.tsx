@@ -4,54 +4,40 @@ import { Link, useFocusEffect, router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 import { View, Text } from '@/components/Themed';
-import { Card, Button, EquipmentBadge } from '@/components';
+import { Card, Button, WorkerBadge } from '@/components';
 import { colors, spacing, typography } from '@/theme';
-import { getEquipment, Equipment, getEquipmentCertifiedWorkers } from '@/api/client';
+import { getWorkers, Worker } from '@/api/client';
 
 const STATUS_COLORS: Record<string, string> = {
-  available: colors.status.success,
-  in_use: colors.status.warning,
-  maintenance: colors.status.info,
-  retired: colors.gray[400],
+  active: colors.status.success,
+  inactive: colors.gray[400],
+  on_leave: colors.status.warning,
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  available: 'Available',
-  in_use: 'In Use',
-  maintenance: 'Maintenance',
-  retired: 'Retired',
+  active: 'Active',
+  inactive: 'Inactive',
+  on_leave: 'On Leave',
 };
 
-interface EquipmentWithCount extends Equipment {
-  certifiedWorkerCount?: number;
-}
+const SKILL_LABELS: Record<string, string> = {
+  SEWING: 'Sewing',
+  OTHER: 'General',
+};
 
-export default function EquipmentScreen() {
-  const [equipment, setEquipment] = useState<EquipmentWithCount[]>([]);
+export default function AdminWorkersScreen() {
+  const [workers, setWorkers] = useState<Worker[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchEquipment = async () => {
+  const fetchWorkers = async () => {
     try {
       setError(null);
-      const data = await getEquipment();
-
-      // Fetch certified worker counts for each equipment
-      const equipmentWithCounts = await Promise.all(
-        data.map(async (equip) => {
-          try {
-            const workers = await getEquipmentCertifiedWorkers(equip.id);
-            return { ...equip, certifiedWorkerCount: workers.length };
-          } catch {
-            return { ...equip, certifiedWorkerCount: 0 };
-          }
-        })
-      );
-
-      setEquipment(equipmentWithCounts);
+      const data = await getWorkers();
+      setWorkers(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load equipment');
+      setError(err instanceof Error ? err.message : 'Failed to load workers');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -59,25 +45,25 @@ export default function EquipmentScreen() {
   };
 
   useEffect(() => {
-    fetchEquipment();
+    fetchWorkers();
   }, []);
 
   useFocusEffect(
     useCallback(() => {
-      fetchEquipment();
+      fetchWorkers();
     }, [])
   );
 
   const onRefresh = () => {
     setRefreshing(true);
-    fetchEquipment();
+    fetchWorkers();
   };
 
   if (loading) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={colors.navy} />
-        <Text style={styles.loadingText}>Loading equipment...</Text>
+        <Text style={styles.loadingText}>Loading workers...</Text>
       </View>
     );
   }
@@ -86,12 +72,12 @@ export default function EquipmentScreen() {
     return (
       <View style={styles.centered}>
         <Text style={styles.errorText}>{error}</Text>
-        <Button title="Retry" onPress={fetchEquipment} variant="secondary" />
+        <Button title="Retry" onPress={fetchWorkers} variant="secondary" />
       </View>
     );
   }
 
-  if (equipment.length === 0) {
+  if (workers.length === 0) {
     return (
       <ScrollView
         style={styles.container}
@@ -101,12 +87,12 @@ export default function EquipmentScreen() {
         }
       >
         <View style={styles.emptyState}>
-          <FontAwesome name="wrench" size={48} color={colors.gray[300]} />
-          <Text style={styles.emptyTitle}>No Equipment</Text>
-          <Text style={styles.emptyText}>Add equipment to track machines and certifications.</Text>
+          <FontAwesome name="users" size={48} color={colors.gray[300]} />
+          <Text style={styles.emptyTitle}>No Workers</Text>
+          <Text style={styles.emptyText}>Add workers to manage your production team.</Text>
         </View>
-        <Link href="/equipment/new" asChild>
-          <Button title="Add Equipment" variant="primary" style={styles.createButton} />
+        <Link href="/workers/new" asChild>
+          <Button title="Add Worker" variant="primary" style={styles.createButton} />
         </Link>
       </ScrollView>
     );
@@ -120,56 +106,77 @@ export default function EquipmentScreen() {
       }
     >
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Equipment</Text>
-        <Link href="/equipment/new" asChild>
+        <Text style={styles.headerTitle}>Workers</Text>
+        <Link href="/workers/new" asChild>
           <Pressable style={styles.addButton}>
             <FontAwesome name="plus" size={16} color={colors.white} />
           </Pressable>
         </Link>
       </View>
 
-      {equipment.map((equip) => (
+      {workers.map((worker) => (
         <Pressable
-          key={equip.id}
-          onPress={() => router.push(`/equipment/${equip.id}`)}
+          key={worker.id}
+          onPress={() => router.push(`/workers/${worker.id}`)}
         >
-          <Card style={styles.equipmentCard}>
-            <View style={styles.equipmentHeader}>
-              <EquipmentBadge name={equip.name} size="large" status={equip.status} />
-              <View style={styles.equipmentInfo}>
-                <Text style={styles.equipmentName}>{equip.name}</Text>
-                {equip.description && (
-                  <Text style={styles.description} numberOfLines={1}>{equip.description}</Text>
+          <Card style={styles.workerCard}>
+            <View style={styles.workerHeader}>
+              <WorkerBadge name={worker.name} size="large" />
+              <View style={styles.workerInfo}>
+                <Text style={styles.workerName}>{worker.name}</Text>
+                {worker.employee_id && (
+                  <Text style={styles.employeeId}>{worker.employee_id}</Text>
                 )}
               </View>
               <View
                 style={[
                   styles.statusBadge,
-                  { backgroundColor: STATUS_COLORS[equip.status] + '20' },
+                  { backgroundColor: STATUS_COLORS[worker.status] + '20' },
                 ]}
               >
                 <View
                   style={[
                     styles.statusDot,
-                    { backgroundColor: STATUS_COLORS[equip.status] },
+                    { backgroundColor: STATUS_COLORS[worker.status] },
                   ]}
                 />
                 <Text
-                  style={[styles.statusText, { color: STATUS_COLORS[equip.status] }]}
+                  style={[styles.statusText, { color: STATUS_COLORS[worker.status] }]}
                 >
-                  {STATUS_LABELS[equip.status]}
+                  {STATUS_LABELS[worker.status]}
                 </Text>
               </View>
             </View>
 
-            <View style={styles.equipmentDetails}>
+            <View style={styles.workerDetails}>
               <View style={styles.detailRow}>
-                <FontAwesome name="users" size={14} color={colors.textSecondary} />
+                <FontAwesome name="wrench" size={14} color={colors.textSecondary} />
                 <Text style={styles.detailText}>
-                  {equip.certifiedWorkerCount} certified workers
+                  Skill: {SKILL_LABELS[worker.skill_category]}
+                </Text>
+              </View>
+              <View style={styles.detailRow}>
+                <FontAwesome name="certificate" size={14} color={colors.textSecondary} />
+                <Text style={styles.detailText}>
+                  {worker.certifications?.length || 0} equipment certifications
                 </Text>
               </View>
             </View>
+
+            {worker.certifications && worker.certifications.length > 0 && (
+              <View style={styles.certifications}>
+                {worker.certifications.slice(0, 3).map((cert) => (
+                  <View key={cert.id} style={styles.certBadge}>
+                    <Text style={styles.certText}>{cert.equipment_name}</Text>
+                  </View>
+                ))}
+                {worker.certifications.length > 3 && (
+                  <Text style={styles.moreText}>
+                    +{worker.certifications.length - 3} more
+                  </Text>
+                )}
+              </View>
+            )}
           </Card>
         </Pressable>
       ))}
@@ -241,23 +248,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  equipmentCard: {
+  workerCard: {
     marginHorizontal: spacing.md,
     marginBottom: spacing.md,
   },
-  equipmentHeader: {
+  workerHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
   },
-  equipmentInfo: {
+  workerInfo: {
     flex: 1,
   },
-  equipmentName: {
+  workerName: {
     ...typography.h3,
     color: colors.text,
   },
-  description: {
+  employeeId: {
     ...typography.caption,
     color: colors.textSecondary,
     marginTop: 2,
@@ -279,7 +286,7 @@ const styles = StyleSheet.create({
     ...typography.caption,
     fontWeight: '600',
   },
-  equipmentDetails: {
+  workerDetails: {
     marginTop: spacing.md,
     gap: spacing.xs,
   },
@@ -291,5 +298,29 @@ const styles = StyleSheet.create({
   detailText: {
     ...typography.bodySmall,
     color: colors.textSecondary,
+  },
+  certifications: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  certBadge: {
+    backgroundColor: colors.gray[100],
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: 4,
+  },
+  certText: {
+    ...typography.caption,
+    color: colors.text,
+  },
+  moreText: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    alignSelf: 'center',
   },
 });

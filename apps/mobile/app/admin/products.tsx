@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { StyleSheet, ScrollView, RefreshControl, ActivityIndicator, Pressable } from 'react-native';
-import { Link, useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 import { View, Text } from '@/components/Themed';
@@ -8,7 +8,7 @@ import { Card, NoProductsEmpty } from '@/components';
 import { colors, spacing, typography } from '@/theme';
 import { getProducts, Product } from '@/api/client';
 
-export default function ProductsScreen() {
+export default function AdminProductsScreen() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);

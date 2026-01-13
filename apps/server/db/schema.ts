@@ -90,8 +90,67 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
       quantity INTEGER NOT NULL,
       due_date TEXT NOT NULL,
       status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'scheduled', 'in_progress', 'completed')),
+      color TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (product_id) REFERENCES products(id)
+    )
+  `);
+
+  // Worker proficiencies per step (1-5 scale)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS worker_proficiencies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      worker_id INTEGER NOT NULL,
+      product_step_id INTEGER NOT NULL,
+      level INTEGER NOT NULL DEFAULT 3 CHECK (level >= 1 AND level <= 5),
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_step_id) REFERENCES product_steps(id) ON DELETE CASCADE,
+      UNIQUE (worker_id, product_step_id)
+    )
+  `);
+
+  // Proficiency change history for analytics
+  db.run(`
+    CREATE TABLE IF NOT EXISTS proficiency_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      worker_id INTEGER NOT NULL,
+      product_step_id INTEGER NOT NULL,
+      old_level INTEGER NOT NULL,
+      new_level INTEGER NOT NULL,
+      reason TEXT NOT NULL CHECK (reason IN ('manual', 'auto_increase', 'auto_decrease')),
+      trigger_data TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_step_id) REFERENCES product_steps(id) ON DELETE CASCADE
+    )
+  `);
+
+  // What-if scheduling scenarios
+  db.run(`
+    CREATE TABLE IF NOT EXISTS scheduling_scenarios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT,
+      is_active INTEGER DEFAULT 0,
+      worker_pool TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Scenario schedule results
+  db.run(`
+    CREATE TABLE IF NOT EXISTS scenario_schedules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scenario_id INTEGER NOT NULL,
+      order_id INTEGER NOT NULL,
+      schedule_data TEXT NOT NULL,
+      deadline_risk TEXT,
+      overtime_hours REAL DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (scenario_id) REFERENCES scheduling_scenarios(id) ON DELETE CASCADE,
+      FOREIGN KEY (order_id) REFERENCES orders(id)
     )
   `);
 
@@ -107,6 +166,8 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   `);
 
   // Schedule entries table
+  // Note: worker_id, actual_start_time, actual_end_time, actual_output, status, notes
+  // are deprecated - use task_worker_assignments instead for per-worker tracking
   db.run(`
     CREATE TABLE IF NOT EXISTS schedule_entries (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,6 +189,24 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
     )
   `);
 
+  // Task worker assignments (multi-worker per task with per-worker time tracking)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS task_worker_assignments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      schedule_entry_id INTEGER NOT NULL,
+      worker_id INTEGER NOT NULL,
+      actual_start_time TEXT,
+      actual_end_time TEXT,
+      actual_output INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'not_started' CHECK (status IN ('not_started', 'in_progress', 'completed')),
+      notes TEXT,
+      assigned_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (schedule_entry_id) REFERENCES schedule_entries(id) ON DELETE CASCADE,
+      FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE,
+      UNIQUE (schedule_entry_id, worker_id)
+    )
+  `);
+
   // Create indexes for common queries
   db.run("CREATE INDEX IF NOT EXISTS idx_product_steps_product ON product_steps(product_id)");
   db.run("CREATE INDEX IF NOT EXISTS idx_product_steps_equipment ON product_steps(equipment_id)");
@@ -139,6 +218,13 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   db.run("CREATE INDEX IF NOT EXISTS idx_workers_status ON workers(status)");
   db.run("CREATE INDEX IF NOT EXISTS idx_equipment_certifications_worker ON equipment_certifications(worker_id)");
   db.run("CREATE INDEX IF NOT EXISTS idx_equipment_certifications_equipment ON equipment_certifications(equipment_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_worker_proficiencies_worker ON worker_proficiencies(worker_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_worker_proficiencies_step ON worker_proficiencies(product_step_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_proficiency_history_worker ON proficiency_history(worker_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_proficiency_history_step ON proficiency_history(product_step_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_scenario_schedules_scenario ON scenario_schedules(scenario_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_task_worker_assignments_entry ON task_worker_assignments(schedule_entry_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_task_worker_assignments_worker ON task_worker_assignments(worker_id)");
 
   return db;
 }
@@ -175,6 +261,7 @@ export interface Order {
   quantity: number;
   due_date: string;
   status: 'pending' | 'scheduled' | 'in_progress' | 'completed';
+  color: string | null;
   created_at: string;
 }
 
@@ -224,4 +311,55 @@ export interface EquipmentCertification {
   equipment_id: number;
   certified_at: string;
   expires_at: string | null;
+}
+
+export interface WorkerProficiency {
+  id: number;
+  worker_id: number;
+  product_step_id: number;
+  level: 1 | 2 | 3 | 4 | 5;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProficiencyHistory {
+  id: number;
+  worker_id: number;
+  product_step_id: number;
+  old_level: number;
+  new_level: number;
+  reason: 'manual' | 'auto_increase' | 'auto_decrease';
+  trigger_data: string | null;
+  created_at: string;
+}
+
+export interface SchedulingScenario {
+  id: number;
+  name: string;
+  description: string | null;
+  is_active: number;
+  worker_pool: string;
+  created_at: string;
+}
+
+export interface ScenarioSchedule {
+  id: number;
+  scenario_id: number;
+  order_id: number;
+  schedule_data: string;
+  deadline_risk: string | null;
+  overtime_hours: number;
+  created_at: string;
+}
+
+export interface TaskWorkerAssignment {
+  id: number;
+  schedule_entry_id: number;
+  worker_id: number;
+  actual_start_time: string | null;
+  actual_end_time: string | null;
+  actual_output: number;
+  status: 'not_started' | 'in_progress' | 'completed';
+  notes: string | null;
+  assigned_at: string;
 }

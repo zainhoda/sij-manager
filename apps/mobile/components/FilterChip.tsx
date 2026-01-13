@@ -12,6 +12,8 @@ interface FilterChipProps {
   count?: number;
   /** Chip icon */
   icon?: React.ReactNode;
+  /** Color indicator (for order colors) */
+  color?: string;
   /** Disabled state */
   disabled?: boolean;
   /** Container style */
@@ -24,6 +26,7 @@ export function FilterChip({
   onPress,
   count,
   icon,
+  color,
   disabled = false,
   style,
 }: FilterChipProps) {
@@ -38,6 +41,9 @@ export function FilterChip({
       onPress={onPress}
       disabled={disabled}
     >
+      {color && (
+        <View style={[styles.colorDot, { backgroundColor: color }]} />
+      )}
       {icon && <View style={styles.icon}>{icon}</View>}
       <Text
         style={[
@@ -62,7 +68,7 @@ export function FilterChip({
 // Convenience component for a row of filter chips
 interface FilterChipGroupProps<T extends string> {
   /** Available options */
-  options: { value: T; label: string; count?: number }[];
+  options: { value: T; label: string; count?: number; color?: string }[];
   /** Currently selected values */
   selected: T[];
   /** Change handler */
@@ -107,6 +113,7 @@ export function FilterChipGroup<T extends string>({
           key={option.value}
           label={option.label}
           count={option.count}
+          color={option.color}
           selected={selected.includes(option.value)}
           onPress={() => handlePress(option.value)}
         />
@@ -130,6 +137,11 @@ const styles = StyleSheet.create({
   },
   chipDisabled: {
     opacity: 0.5,
+  },
+  colorDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
   },
   icon: {
     marginRight: 2,

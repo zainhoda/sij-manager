@@ -2,6 +2,47 @@ import { db } from "../db";
 import type { Order, Product } from "../db/schema";
 import type { SQLQueryBindings } from "bun:sqlite";
 
+// Color palette for distinguishing orders
+const ORDER_COLORS = [
+  '#3B82F6', // blue
+  '#10B981', // emerald
+  '#F59E0B', // amber
+  '#EF4444', // red
+  '#8B5CF6', // violet
+  '#EC4899', // pink
+  '#06B6D4', // cyan
+  '#84CC16', // lime
+];
+
+function getNextOrderColor(): string {
+  const usedColors = db.query(
+    "SELECT DISTINCT color FROM orders WHERE color IS NOT NULL"
+  ).all() as { color: string }[];
+  const usedSet = new Set(usedColors.map(c => c.color));
+
+  // Find first unused color
+  const unusedColor = ORDER_COLORS.find(c => !usedSet.has(c));
+  if (unusedColor) {
+    return unusedColor;
+  }
+
+  // All colors used, cycle through based on count
+  const colorCounts = db.query(`
+    SELECT color, COUNT(*) as count
+    FROM orders
+    WHERE color IS NOT NULL
+    GROUP BY color
+    ORDER BY count ASC
+  `).all() as { color: string; count: number }[];
+
+  // Return the least used color, or random if all equal
+  if (colorCounts.length > 0) {
+    return colorCounts[0]!.color;
+  }
+
+  return ORDER_COLORS[Math.floor(Math.random() * ORDER_COLORS.length)]!;
+}
+
 export async function handleOrders(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
 
@@ -63,9 +104,12 @@ async function handleCreateOrder(request: Request): Promise<Response> {
       return Response.json({ error: "Product not found" }, { status: 404 });
     }
 
+    // Auto-assign a color for visual distinction
+    const color = getNextOrderColor();
+
     const result = db.run(
-      "INSERT INTO orders (product_id, quantity, due_date) VALUES (?, ?, ?)",
-      [body.product_id, body.quantity, body.due_date]
+      "INSERT INTO orders (product_id, quantity, due_date, color) VALUES (?, ?, ?, ?)",
+      [body.product_id, body.quantity, body.due_date, color]
     );
 
     const order = db.query("SELECT * FROM orders WHERE id = ?").get(result.lastInsertRowid) as Order;

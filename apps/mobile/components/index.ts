@@ -13,6 +13,8 @@ export { Slider, ProficiencySlider } from './Slider';
 export { WorkerBadge } from './WorkerBadge';
 export { EquipmentBadge } from './EquipmentBadge';
 export { ProficiencyDots } from './ProficiencyDots';
+export { ProficiencyEditor } from './ProficiencyEditor';
+export { CertificationMatrix } from './CertificationMatrix';
 export { CategoryBadge } from './CategoryBadge';
 export { ScheduleEntry } from './ScheduleEntry';
 export { WorkerCard, type WorkerSkill } from './WorkerCard';
@@ -28,8 +30,14 @@ export { EmptyState, NoScheduleEmpty, NoWorkersEmpty, NoOrdersEmpty, NoResultsEm
 export { Toast, ToastProvider, useToast } from './Toast';
 export { BottomSheet, ActionSheet } from './BottomSheet';
 export { ProductionLogSheet } from './ProductionLogSheet';
+export { SpreadsheetTable } from './SpreadsheetTable';
+export { QuickAddWorkerModal } from './QuickAddWorkerModal';
 
 // Existing themed components
 export { Text, View, useThemeColor, type TextProps, type ViewProps } from './Themed';
 export { ExternalLink } from './ExternalLink';
 export { MonoText } from './StyledText';
+
+// Navigation components
+export { ViewCard, type ViewCardProps } from './ViewCard';
+export { SwitchViewButton } from './SwitchViewButton';

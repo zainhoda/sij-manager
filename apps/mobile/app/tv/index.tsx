@@ -1,6 +1,8 @@
-import { StyleSheet, Text, View, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, ActivityIndicator, Pressable } from 'react-native';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { colors } from '@/theme';
 import { useDashboardData } from '@/hooks/useDashboardData';
+import { useViewContext } from '@/context/ViewContext';
 import {
   TVHeader,
   DailyProgressCard,
@@ -11,6 +13,7 @@ import {
 
 export default function TVDashboard() {
   const { dailyProgress, orders, stations, metrics, lastRefresh, isLoading, error } = useDashboardData(30000);
+  const { switchView } = useViewContext();
 
   if (isLoading && !dailyProgress.totalEntries) {
     return (
@@ -33,6 +36,15 @@ export default function TVDashboard() {
 
   return (
     <View style={styles.container}>
+      {/* Discrete switch button in corner */}
+      <Pressable
+        onPress={switchView}
+        style={({ pressed }) => [styles.switchButton, pressed && styles.switchButtonPressed]}
+        hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+      >
+        <FontAwesome name="th-large" size={20} color={colors.gray[600]} />
+      </Pressable>
+
       <TVHeader lastRefresh={lastRefresh} isRefreshing={isLoading} />
 
       <View style={styles.content}>
@@ -57,6 +69,18 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.gray[900],
+  },
+  switchButton: {
+    position: 'absolute',
+    top: 16,
+    left: 16,
+    zIndex: 10,
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: colors.gray[800],
+  },
+  switchButtonPressed: {
+    opacity: 0.7,
   },
   content: {
     flex: 1,
