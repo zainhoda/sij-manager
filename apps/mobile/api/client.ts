@@ -21,6 +21,7 @@ export interface ProductStep {
   sequence: number;
   required_skill_category: 'SEWING' | 'OTHER';
   parent_step_code: string | null;
+  equipment_id: number | null;
   dependencies: number[];
 }
 
@@ -52,6 +53,9 @@ export interface ScheduleEntry {
   category: string;
   required_skill_category: string;
   time_per_piece_seconds?: number;
+  equipment_id?: number | null;
+  equipment_name?: string | null;
+  worker_name?: string | null;
 }
 
 export interface EntryProductivity {
@@ -163,4 +167,93 @@ export const completeScheduleEntry = (id: number, data: { actual_output: number;
   fetchAPI<ScheduleEntry>(`/api/schedule-entries/${id}/complete`, {
     method: 'POST',
     body: JSON.stringify(data),
+  });
+
+// Equipment types
+export interface Equipment {
+  id: number;
+  name: string;
+  description: string | null;
+  status: 'available' | 'in_use' | 'maintenance' | 'retired';
+  created_at: string;
+}
+
+// Worker types
+export interface Worker {
+  id: number;
+  name: string;
+  employee_id: string | null;
+  status: 'active' | 'inactive' | 'on_leave';
+  skill_category: 'SEWING' | 'OTHER';
+  created_at: string;
+  certifications?: EquipmentCertification[];
+}
+
+// Equipment certification types
+export interface EquipmentCertification {
+  id: number;
+  worker_id: number;
+  equipment_id: number;
+  certified_at: string;
+  expires_at: string | null;
+  equipment_name?: string;
+  worker_name?: string;
+}
+
+// Equipment API
+export const getEquipment = () => fetchAPI<Equipment[]>('/api/equipment');
+export const getEquipmentById = (id: number) => fetchAPI<Equipment>(`/api/equipment/${id}`);
+export const createEquipment = (data: { name: string; description?: string }) =>
+  fetchAPI<Equipment>('/api/equipment', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+export const updateEquipment = (
+  id: number,
+  data: { name?: string; description?: string; status?: Equipment['status'] }
+) =>
+  fetchAPI<Equipment>(`/api/equipment/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+export const deleteEquipment = (id: number) =>
+  fetchAPI<{ success: boolean }>(`/api/equipment/${id}`, {
+    method: 'DELETE',
+  });
+export const getEquipmentCertifiedWorkers = (equipmentId: number) =>
+  fetchAPI<Worker[]>(`/api/equipment/${equipmentId}/certified-workers`);
+
+// Workers API
+export const getWorkers = () => fetchAPI<Worker[]>('/api/workers');
+export const getWorkerById = (id: number) => fetchAPI<Worker>(`/api/workers/${id}`);
+export const createWorker = (data: { name: string; employee_id?: string; skill_category?: Worker['skill_category'] }) =>
+  fetchAPI<Worker>('/api/workers', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+export const updateWorker = (
+  id: number,
+  data: { name?: string; employee_id?: string; status?: Worker['status']; skill_category?: Worker['skill_category'] }
+) =>
+  fetchAPI<Worker>(`/api/workers/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+export const deleteWorker = (id: number) =>
+  fetchAPI<{ success: boolean }>(`/api/workers/${id}`, {
+    method: 'DELETE',
+  });
+export const getWorkerCertifications = (workerId: number) =>
+  fetchAPI<EquipmentCertification[]>(`/api/workers/${workerId}/certifications`);
+
+// Certifications API
+export const getCertifications = () => fetchAPI<EquipmentCertification[]>('/api/certifications');
+export const grantCertification = (data: { worker_id: number; equipment_id: number; expires_at?: string }) =>
+  fetchAPI<EquipmentCertification>('/api/certifications', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+export const revokeCertification = (id: number) =>
+  fetchAPI<{ success: boolean }>(`/api/certifications/${id}`, {
+    method: 'DELETE',
   });

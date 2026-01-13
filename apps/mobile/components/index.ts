@@ -11,10 +11,12 @@ export { Slider, ProficiencySlider } from './Slider';
 
 // Domain components
 export { WorkerBadge } from './WorkerBadge';
+export { EquipmentBadge } from './EquipmentBadge';
 export { ProficiencyDots } from './ProficiencyDots';
 export { CategoryBadge } from './CategoryBadge';
 export { ScheduleEntry } from './ScheduleEntry';
 export { WorkerCard, type WorkerSkill } from './WorkerCard';
+export { EquipmentCard } from './EquipmentCard';
 export { DayColumn, type TimeSlot } from './DayColumn';
 export { WeekCalendar } from './WeekCalendar';
 

@@ -1,5 +1,5 @@
 import { db } from "../db";
-import type { Order, ProductStep, Schedule, ScheduleEntry } from "../db/schema";
+import type { Order, ProductStep, Schedule, ScheduleEntry, Worker } from "../db/schema";
 
 // Work day configuration
 const WORK_DAY = {
@@ -21,6 +21,78 @@ interface ScheduleBlock {
   startTime: string;
   endTime: string;
   plannedOutput: number;
+}
+
+interface WorkerAssignment {
+  workerId: number;
+  workerName: string;
+}
+
+// Find a qualified worker for a schedule entry
+function findQualifiedWorker(
+  step: StepWithDependencies,
+  date: string,
+  startTime: string,
+  endTime: string
+): WorkerAssignment | null {
+  // Get all active workers with matching skill category
+  const candidateWorkers = db.query(`
+    SELECT * FROM workers
+    WHERE status = 'active'
+    AND skill_category = ?
+  `).all(step.required_skill_category) as Worker[];
+
+  if (candidateWorkers.length === 0) {
+    return null;
+  }
+
+  // If step requires equipment, filter to workers certified for it
+  let qualifiedWorkers = candidateWorkers;
+  if (step.equipment_id) {
+    qualifiedWorkers = candidateWorkers.filter(worker => {
+      const certification = db.query(`
+        SELECT id FROM equipment_certifications
+        WHERE worker_id = ? AND equipment_id = ?
+        AND (expires_at IS NULL OR expires_at > datetime('now'))
+      `).get(worker.id, step.equipment_id);
+      return certification !== null;
+    });
+
+    if (qualifiedWorkers.length === 0) {
+      return null;
+    }
+  }
+
+  // Filter to workers available during the time slot (not already scheduled)
+  const availableWorkers = qualifiedWorkers.filter(worker => {
+    // Check for overlapping schedule entries
+    const overlap = db.query(`
+      SELECT id FROM schedule_entries
+      WHERE worker_id = ?
+      AND date = ?
+      AND NOT (end_time <= ? OR start_time >= ?)
+    `).get(worker.id, date, startTime, endTime);
+    return overlap === null;
+  });
+
+  if (availableWorkers.length === 0) {
+    return null;
+  }
+
+  // Score remaining candidates by workload (fewer assignments = higher priority)
+  const scoredWorkers = availableWorkers.map(worker => {
+    const workload = db.query(`
+      SELECT COUNT(*) as count FROM schedule_entries
+      WHERE worker_id = ? AND date = ?
+    `).get(worker.id, date) as { count: number };
+    return { worker, score: workload.count };
+  });
+
+  // Sort by score (lowest first)
+  scoredWorkers.sort((a, b) => a.score - b.score);
+
+  const bestWorker = scoredWorkers[0]!.worker;
+  return { workerId: bestWorker.id, workerName: bestWorker.name };
 }
 
 // Convert time string to minutes since midnight
@@ -214,17 +286,23 @@ export function generateSchedule(orderId: number): Schedule | null {
         const outputInBlock = Math.floor(secondsInBlock / step.time_per_piece_seconds);
         outputScheduled += outputInBlock;
 
-        // Create schedule entry
+        // Find a qualified worker for this time slot
+        const startTimeStr = minutesToTime(currentTimeMinutes);
+        const endTimeStr = minutesToTime(endTimeMinutes);
+        const workerAssignment = findQualifiedWorker(step, dateStr, startTimeStr, endTimeStr);
+
+        // Create schedule entry (with or without worker assignment)
         db.run(
-          `INSERT INTO schedule_entries (schedule_id, product_step_id, date, start_time, end_time, planned_output)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO schedule_entries (schedule_id, product_step_id, date, start_time, end_time, planned_output, worker_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [
             scheduleId,
             stepId,
             dateStr,
-            minutesToTime(currentTimeMinutes),
-            minutesToTime(endTimeMinutes),
+            startTimeStr,
+            endTimeStr,
             outputInBlock,
+            workerAssignment?.workerId ?? null,
           ]
         );
 
@@ -276,15 +354,23 @@ export function getScheduleWithEntries(scheduleId: number) {
       se.*,
       ps.name as step_name,
       ps.category,
-      ps.required_skill_category
+      ps.required_skill_category,
+      ps.equipment_id,
+      e.name as equipment_name,
+      w.name as worker_name
     FROM schedule_entries se
     JOIN product_steps ps ON se.product_step_id = ps.id
+    LEFT JOIN equipment e ON ps.equipment_id = e.id
+    LEFT JOIN workers w ON se.worker_id = w.id
     WHERE se.schedule_id = ?
     ORDER BY se.date, se.start_time
   `).all(scheduleId) as (ScheduleEntry & {
     step_name: string;
     category: string;
     required_skill_category: string;
+    equipment_id: number | null;
+    equipment_name: string | null;
+    worker_name: string | null;
   })[];
 
   // Group entries by date

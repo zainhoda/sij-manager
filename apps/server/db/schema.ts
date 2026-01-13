@@ -16,6 +16,43 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
     )
   `);
 
+  // Equipment table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS equipment (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      status TEXT DEFAULT 'available' CHECK (status IN ('available', 'in_use', 'maintenance', 'retired')),
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Workers table (human resources)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS workers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      employee_id TEXT UNIQUE,
+      status TEXT DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'on_leave')),
+      skill_category TEXT DEFAULT 'OTHER' CHECK (skill_category IN ('SEWING', 'OTHER')),
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Equipment certifications (worker-equipment junction table)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS equipment_certifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      worker_id INTEGER NOT NULL,
+      equipment_id INTEGER NOT NULL,
+      certified_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT,
+      FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE,
+      FOREIGN KEY (equipment_id) REFERENCES equipment(id) ON DELETE CASCADE,
+      UNIQUE (worker_id, equipment_id)
+    )
+  `);
+
   // Product steps table
   db.run(`
     CREATE TABLE IF NOT EXISTS product_steps (
@@ -27,7 +64,9 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
       sequence INTEGER NOT NULL,
       required_skill_category TEXT NOT NULL CHECK (required_skill_category IN ('SEWING', 'OTHER')),
       parent_step_code TEXT,
-      FOREIGN KEY (product_id) REFERENCES products(id)
+      equipment_id INTEGER,
+      FOREIGN KEY (product_id) REFERENCES products(id),
+      FOREIGN KEY (equipment_id) REFERENCES equipment(id)
     )
   `);
 
@@ -84,16 +123,22 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
       status TEXT DEFAULT 'not_started' CHECK (status IN ('not_started', 'in_progress', 'completed')),
       notes TEXT,
       FOREIGN KEY (schedule_id) REFERENCES schedules(id),
-      FOREIGN KEY (product_step_id) REFERENCES product_steps(id)
+      FOREIGN KEY (product_step_id) REFERENCES product_steps(id),
+      FOREIGN KEY (worker_id) REFERENCES workers(id)
     )
   `);
 
   // Create indexes for common queries
   db.run("CREATE INDEX IF NOT EXISTS idx_product_steps_product ON product_steps(product_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_product_steps_equipment ON product_steps(equipment_id)");
   db.run("CREATE INDEX IF NOT EXISTS idx_orders_product ON orders(product_id)");
   db.run("CREATE INDEX IF NOT EXISTS idx_schedules_order ON schedules(order_id)");
   db.run("CREATE INDEX IF NOT EXISTS idx_schedule_entries_schedule ON schedule_entries(schedule_id)");
   db.run("CREATE INDEX IF NOT EXISTS idx_schedule_entries_date ON schedule_entries(date)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_schedule_entries_worker ON schedule_entries(worker_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_workers_status ON workers(status)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_equipment_certifications_worker ON equipment_certifications(worker_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_equipment_certifications_equipment ON equipment_certifications(equipment_id)");
 
   return db;
 }
@@ -115,6 +160,7 @@ export interface ProductStep {
   sequence: number;
   required_skill_category: 'SEWING' | 'OTHER';
   parent_step_code: string | null;
+  equipment_id: number | null;
 }
 
 export interface StepDependency {
@@ -153,4 +199,29 @@ export interface ScheduleEntry {
   actual_output: number;
   status: 'not_started' | 'in_progress' | 'completed';
   notes: string | null;
+}
+
+export interface Equipment {
+  id: number;
+  name: string;
+  description: string | null;
+  status: 'available' | 'in_use' | 'maintenance' | 'retired';
+  created_at: string;
+}
+
+export interface Worker {
+  id: number;
+  name: string;
+  employee_id: string | null;
+  status: 'active' | 'inactive' | 'on_leave';
+  skill_category: 'SEWING' | 'OTHER';
+  created_at: string;
+}
+
+export interface EquipmentCertification {
+  id: number;
+  worker_id: number;
+  equipment_id: number;
+  certified_at: string;
+  expires_at: string | null;
 }

@@ -59,6 +59,20 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="workers"
+        options={{
+          title: 'Workers',
+          tabBarIcon: ({ color }) => <TabBarIcon name="users" color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="equipment"
+        options={{
+          title: 'Equipment',
+          tabBarIcon: ({ color }) => <TabBarIcon name="wrench" color={color} />,
+        }}
+      />
+      <Tabs.Screen
         name="admin"
         options={{
           title: 'Admin',
