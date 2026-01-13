@@ -72,6 +72,7 @@ export interface ScheduleEntry {
   equipment_name?: string | null;
   worker_name?: string | null; // Deprecated - use assignments
   order_color?: string | null;
+  product_name?: string;
   // New multi-worker fields
   computed_status?: 'not_started' | 'in_progress' | 'completed';
   total_actual_output?: number;
@@ -478,6 +479,57 @@ export const recalculateProficiencies = () =>
   fetchAPI<{ applied: number; adjustments: unknown[] }>('/api/analytics/recalculate-proficiencies', {
     method: 'POST',
   });
+
+// Assignment Analytics Interfaces
+export interface AssignmentOutputHistoryEntry {
+  id: number;
+  output: number;
+  recorded_at: string;
+}
+
+export interface AssignmentTimeMetrics {
+  assignmentId: number;
+  totalUpdates: number;
+  beginningAvgTimePerPiece: number | null;
+  middleAvgTimePerPiece: number | null;
+  endAvgTimePerPiece: number | null;
+  overallAvgTimePerPiece: number | null;
+  speedupPercentage: number | null;
+  currentOutput: number;
+  startTime: string | null;
+  endTime: string | null;
+  status: string;
+}
+
+export interface AssignmentAnalytics {
+  assignmentId: number;
+  scheduleEntryId: number;
+  workerId: number;
+  workerName: string;
+  stepName: string;
+  category: string;
+  timePerPieceSeconds: number;
+  plannedOutput: number;
+  currentOutput: number;
+  startTime: string | null;
+  endTime: string | null;
+  status: string;
+  outputHistory: AssignmentOutputHistoryEntry[];
+  timeMetrics: AssignmentTimeMetrics | null;
+}
+
+// Assignment Analytics API
+export const getAssignmentOutputHistory = (assignmentId: number) =>
+  fetchAPI<AssignmentOutputHistoryEntry[]>(`/api/analytics/assignments/${assignmentId}/output-history`);
+
+export const getAssignmentMetrics = (assignmentId: number) =>
+  fetchAPI<AssignmentTimeMetrics>(`/api/analytics/assignments/${assignmentId}/metrics`);
+
+export const getAssignmentAnalytics = (assignmentId: number) =>
+  fetchAPI<AssignmentAnalytics>(`/api/analytics/assignments/${assignmentId}`);
+
+export const getWorkerAssignmentAnalytics = (workerId: number) =>
+  fetchAPI<AssignmentAnalytics[]>(`/api/analytics/workers/${workerId}/assignments`);
 
 // Scheduling types
 export interface DeadlineRisk {

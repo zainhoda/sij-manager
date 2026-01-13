@@ -207,6 +207,18 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
     )
   `);
 
+  // Assignment output history (non-destructive tracking of output updates)
+  // This allows tracking how output changes over time to calculate average time per piece
+  db.run(`
+    CREATE TABLE IF NOT EXISTS assignment_output_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      assignment_id INTEGER NOT NULL,
+      output INTEGER NOT NULL,
+      recorded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (assignment_id) REFERENCES task_worker_assignments(id) ON DELETE CASCADE
+    )
+  `);
+
   // Create indexes for common queries
   db.run("CREATE INDEX IF NOT EXISTS idx_product_steps_product ON product_steps(product_id)");
   db.run("CREATE INDEX IF NOT EXISTS idx_product_steps_equipment ON product_steps(equipment_id)");
@@ -225,6 +237,8 @@ export function initDatabase(dbPath: string = "sij.db"): Database {
   db.run("CREATE INDEX IF NOT EXISTS idx_scenario_schedules_scenario ON scenario_schedules(scenario_id)");
   db.run("CREATE INDEX IF NOT EXISTS idx_task_worker_assignments_entry ON task_worker_assignments(schedule_entry_id)");
   db.run("CREATE INDEX IF NOT EXISTS idx_task_worker_assignments_worker ON task_worker_assignments(worker_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_assignment_output_history_assignment ON assignment_output_history(assignment_id)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_assignment_output_history_recorded ON assignment_output_history(recorded_at)");
 
   return db;
 }
@@ -362,4 +376,11 @@ export interface TaskWorkerAssignment {
   status: 'not_started' | 'in_progress' | 'completed';
   notes: string | null;
   assigned_at: string;
+}
+
+export interface AssignmentOutputHistory {
+  id: number;
+  assignment_id: number;
+  output: number;
+  recorded_at: string;
 }

@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { StyleSheet, ScrollView, RefreshControl, ActivityIndicator } from 'react-native';
-import { useLocalSearchParams, Stack } from 'expo-router';
+import { StyleSheet, ScrollView, RefreshControl, ActivityIndicator, Pressable } from 'react-native';
+import { useLocalSearchParams, Stack, router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { TrendingUp, Clock } from 'lucide-react-native';
 
 import { View, Text } from '@/components/Themed';
 import { Card, StatCard, StatGrid, CategoryBadge, ProficiencyDots, Button } from '@/components';
@@ -9,8 +10,10 @@ import { colors, spacing, typography } from '@/theme';
 import {
   getWorkerProductivity,
   getWorkerProficiencyHistory,
+  getWorkerAssignmentAnalytics,
   ProductivitySummary,
   ProficiencyHistoryEntry,
+  AssignmentAnalytics as AssignmentAnalyticsType,
 } from '@/api/client';
 
 const REASON_LABELS: Record<string, { label: string; icon: string; color: string }> = {
@@ -23,6 +26,7 @@ export default function WorkerProductivityScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [productivity, setProductivity] = useState<ProductivitySummary | null>(null);
   const [history, setHistory] = useState<ProficiencyHistoryEntry[]>([]);
+  const [assignments, setAssignments] = useState<AssignmentAnalyticsType[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,12 +35,14 @@ export default function WorkerProductivityScreen() {
     if (!id) return;
     try {
       setError(null);
-      const [prodData, histData] = await Promise.all([
+      const [prodData, histData, assignmentsData] = await Promise.all([
         getWorkerProductivity(parseInt(id)),
         getWorkerProficiencyHistory(parseInt(id)),
+        getWorkerAssignmentAnalytics(parseInt(id)),
       ]);
       setProductivity(prodData);
       setHistory(histData);
+      setAssignments(assignmentsData);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load data');
     } finally {
@@ -210,6 +216,67 @@ export default function WorkerProductivityScreen() {
             </View>
           )}
         </Card>
+
+        {/* Assignment Performance */}
+        <Card style={styles.sectionCard}>
+          <Text style={styles.sectionTitle}>Assignment Performance</Text>
+          {assignments.length === 0 ? (
+            <Text style={styles.emptyText}>No assignment data available</Text>
+          ) : (
+            <View style={styles.assignmentsList}>
+              {assignments.slice(0, 10).map((assignment) => {
+                const metrics = assignment.timeMetrics;
+                const speedupColor =
+                  metrics?.speedupPercentage !== null && metrics.speedupPercentage > 0
+                    ? colors.status.success
+                    : metrics?.speedupPercentage !== null && metrics.speedupPercentage < 0
+                    ? colors.status.warning
+                    : colors.textSecondary;
+
+                return (
+                  <Pressable
+                    key={assignment.assignmentId}
+                    style={styles.assignmentItem}
+                    onPress={() => router.push(`/assignments/${assignment.assignmentId}/analytics`)}
+                  >
+                    <View style={styles.assignmentHeader}>
+                      <View style={styles.assignmentInfo}>
+                        <Text style={styles.assignmentStep}>{assignment.stepName}</Text>
+                        <Text style={styles.assignmentStatus}>
+                          {assignment.status === 'completed' ? 'Completed' : 'In Progress'}
+                        </Text>
+                      </View>
+                      {metrics?.speedupPercentage !== null && (
+                        <View style={[styles.speedupBadge, { backgroundColor: speedupColor + '20' }]}>
+                          <TrendingUp size={12} color={speedupColor} />
+                          <Text style={[styles.speedupText, { color: speedupColor }]}>
+                            {metrics.speedupPercentage > 0 ? '+' : ''}
+                            {metrics.speedupPercentage.toFixed(1)}%
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                    <View style={styles.assignmentMetrics}>
+                      {metrics?.overallAvgTimePerPiece !== null && (
+                        <View style={styles.metricItem}>
+                          <Clock size={12} color={colors.textSecondary} />
+                          <Text style={styles.metricText}>
+                            {(metrics.overallAvgTimePerPiece / 60).toFixed(1)}m/piece
+                          </Text>
+                        </View>
+                      )}
+                      <View style={styles.metricItem}>
+                        <Text style={styles.metricText}>
+                          {assignment.currentOutput} / {assignment.plannedOutput} pcs
+                        </Text>
+                      </View>
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+        </Card>
       </ScrollView>
     </>
   );
@@ -343,5 +410,61 @@ const styles = StyleSheet.create({
   historyDate: {
     ...typography.caption,
     color: colors.textMuted,
+  },
+  assignmentsList: {
+    gap: spacing.sm,
+  },
+  assignmentItem: {
+    backgroundColor: colors.gray[50],
+    padding: spacing.sm,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.gray[200],
+  },
+  assignmentHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.xs,
+  },
+  assignmentInfo: {
+    flex: 1,
+  },
+  assignmentStep: {
+    ...typography.body,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  assignmentStatus: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  speedupBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  speedupText: {
+    ...typography.caption,
+    fontWeight: '600',
+    fontSize: 10,
+  },
+  assignmentMetrics: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    alignItems: 'center',
+  },
+  metricItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  metricText: {
+    ...typography.caption,
+    color: colors.textSecondary,
   },
 });

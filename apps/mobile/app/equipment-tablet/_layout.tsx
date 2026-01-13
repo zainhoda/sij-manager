@@ -1,5 +1,6 @@
 import React from 'react';
 import { Stack } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
@@ -9,18 +10,28 @@ export default function EquipmentTabletLayout() {
   const colorScheme = useColorScheme();
 
   return (
-    <Stack
-      screenOptions={{
-        headerTintColor: Colors[colorScheme ?? 'light'].tint,
-        headerLeft: () => <SwitchViewButton />,
-      }}
-    >
-      <Stack.Screen
-        name="index"
-        options={{
-          title: 'Equipment Status',
+    <>
+      <StatusBar hidden />
+      <Stack
+        screenOptions={{
+          headerTintColor: Colors[colorScheme ?? 'light'].tint,
+          headerLeft: () => <SwitchViewButton />,
         }}
-      />
-    </Stack>
+      >
+        <Stack.Screen
+          name="index"
+          options={{
+            title: 'Select Equipment',
+          }}
+        />
+        <Stack.Screen
+          name="[id]"
+          options={{
+            headerShown: false,
+            contentStyle: { backgroundColor: '#111827' },
+          }}
+        />
+      </Stack>
+    </>
   );
 }

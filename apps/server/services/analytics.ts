@@ -362,3 +362,301 @@ export function applyProficiencyAdjustment(adjustment: ProficiencyAdjustment): v
     ]
   );
 }
+
+// Assignment Analytics Interfaces
+export interface AssignmentOutputHistoryEntry {
+  id: number;
+  output: number;
+  recorded_at: string;
+}
+
+export interface AssignmentTimeMetrics {
+  assignmentId: number;
+  totalUpdates: number;
+  beginningAvgTimePerPiece: number | null; // seconds per piece (first 25% of updates)
+  middleAvgTimePerPiece: number | null; // seconds per piece (middle 50% of updates)
+  endAvgTimePerPiece: number | null; // seconds per piece (last 25% of updates)
+  overallAvgTimePerPiece: number | null; // seconds per piece (all updates)
+  speedupPercentage: number | null; // how much faster at end vs beginning (%)
+  currentOutput: number;
+  startTime: string | null;
+  endTime: string | null;
+  status: string;
+}
+
+export interface AssignmentAnalytics {
+  assignmentId: number;
+  scheduleEntryId: number;
+  workerId: number;
+  workerName: string;
+  stepName: string;
+  category: string;
+  timePerPieceSeconds: number;
+  plannedOutput: number;
+  currentOutput: number;
+  startTime: string | null;
+  endTime: string | null;
+  status: string;
+  outputHistory: AssignmentOutputHistoryEntry[];
+  timeMetrics: AssignmentTimeMetrics | null;
+}
+
+// Get assignment output history
+export function getAssignmentOutputHistory(assignmentId: number): AssignmentOutputHistoryEntry[] {
+  return db.query(`
+    SELECT 
+      aoh.id,
+      aoh.output,
+      aoh.recorded_at
+    FROM assignment_output_history aoh
+    WHERE aoh.assignment_id = ?
+    ORDER BY aoh.recorded_at ASC
+  `).all(assignmentId) as AssignmentOutputHistoryEntry[];
+}
+
+// Calculate time-per-piece metrics for an assignment
+export function getAssignmentTimeMetrics(assignmentId: number): AssignmentTimeMetrics | null {
+  // Get assignment info
+  const assignment = db.query(`
+    SELECT 
+      twa.id,
+      twa.actual_start_time,
+      twa.actual_end_time,
+      twa.actual_output,
+      twa.status,
+      ps.time_per_piece_seconds
+    FROM task_worker_assignments twa
+    JOIN schedule_entries se ON twa.schedule_entry_id = se.id
+    JOIN product_steps ps ON se.product_step_id = ps.id
+    WHERE twa.id = ?
+  `).get(assignmentId) as {
+    id: number;
+    actual_start_time: string | null;
+    actual_end_time: string | null;
+    actual_output: number;
+    status: string;
+    time_per_piece_seconds: number;
+  } | null;
+
+  if (!assignment) return null;
+
+  // Get output history
+  const history = getAssignmentOutputHistory(assignmentId);
+  
+  if (history.length < 2) {
+    // Not enough data for metrics
+    return {
+      assignmentId,
+      totalUpdates: history.length,
+      beginningAvgTimePerPiece: null,
+      middleAvgTimePerPiece: null,
+      endAvgTimePerPiece: null,
+      overallAvgTimePerPiece: null,
+      speedupPercentage: null,
+      currentOutput: assignment.actual_output,
+      startTime: assignment.actual_start_time,
+      endTime: assignment.actual_end_time,
+      status: assignment.status,
+    };
+  }
+
+  // Calculate time per piece for each interval
+  const timePerPieceIntervals: number[] = [];
+  
+  for (let i = 1; i < history.length; i++) {
+    const prev = history[i - 1];
+    const curr = history[i];
+    
+    const prevTime = new Date(prev.recorded_at).getTime();
+    const currTime = new Date(curr.recorded_at).getTime();
+    const timeDiffSeconds = (currTime - prevTime) / 1000;
+    const outputDiff = curr.output - prev.output;
+    
+    if (outputDiff > 0 && timeDiffSeconds > 0) {
+      const timePerPiece = timeDiffSeconds / outputDiff;
+      timePerPieceIntervals.push(timePerPiece);
+    }
+  }
+
+  if (timePerPieceIntervals.length === 0) {
+    return {
+      assignmentId,
+      totalUpdates: history.length,
+      beginningAvgTimePerPiece: null,
+      middleAvgTimePerPiece: null,
+      endAvgTimePerPiece: null,
+      overallAvgTimePerPiece: null,
+      speedupPercentage: null,
+      currentOutput: assignment.actual_output,
+      startTime: assignment.actual_start_time,
+      endTime: assignment.actual_end_time,
+      status: assignment.status,
+    };
+  }
+
+  // Calculate stage averages
+  const totalIntervals = timePerPieceIntervals.length;
+  const beginningCount = Math.max(1, Math.floor(totalIntervals * 0.25));
+  const middleStart = beginningCount;
+  const middleCount = Math.max(1, Math.floor(totalIntervals * 0.5));
+  const endStart = middleStart + middleCount;
+  const endCount = totalIntervals - endStart;
+
+  const beginningIntervals = timePerPieceIntervals.slice(0, beginningCount);
+  const middleIntervals = timePerPieceIntervals.slice(middleStart, middleStart + middleCount);
+  const endIntervals = timePerPieceIntervals.slice(endStart);
+
+  const beginningAvg = beginningIntervals.length > 0
+    ? beginningIntervals.reduce((a, b) => a + b, 0) / beginningIntervals.length
+    : null;
+  
+  const middleAvg = middleIntervals.length > 0
+    ? middleIntervals.reduce((a, b) => a + b, 0) / middleIntervals.length
+    : null;
+  
+  const endAvg = endIntervals.length > 0
+    ? endIntervals.reduce((a, b) => a + b, 0) / endIntervals.length
+    : null;
+  
+  const overallAvg = timePerPieceIntervals.reduce((a, b) => a + b, 0) / timePerPieceIntervals.length;
+
+  // Calculate speedup percentage (how much faster at end vs beginning)
+  const speedupPercentage = (beginningAvg !== null && endAvg !== null && beginningAvg > 0)
+    ? ((beginningAvg - endAvg) / beginningAvg) * 100
+    : null;
+
+  return {
+    assignmentId,
+    totalUpdates: history.length,
+    beginningAvgTimePerPiece: beginningAvg ? Math.round(beginningAvg * 10) / 10 : null,
+    middleAvgTimePerPiece: middleAvg ? Math.round(middleAvg * 10) / 10 : null,
+    endAvgTimePerPiece: endAvg ? Math.round(endAvg * 10) / 10 : null,
+    overallAvgTimePerPiece: Math.round(overallAvg * 10) / 10,
+    speedupPercentage: speedupPercentage ? Math.round(speedupPercentage * 10) / 10 : null,
+    currentOutput: assignment.actual_output,
+    startTime: assignment.actual_start_time,
+    endTime: assignment.actual_end_time,
+    status: assignment.status,
+  };
+}
+
+// Get single assignment analytics
+export function getAssignmentAnalytics(assignmentId: number): AssignmentAnalytics | null {
+  const assignment = db.query(`
+    SELECT 
+      twa.id as assignment_id,
+      twa.schedule_entry_id,
+      twa.worker_id,
+      twa.actual_start_time,
+      twa.actual_end_time,
+      twa.actual_output,
+      twa.status,
+      w.name as worker_name,
+      ps.name as step_name,
+      ps.category,
+      ps.time_per_piece_seconds,
+      se.planned_output
+    FROM task_worker_assignments twa
+    JOIN workers w ON twa.worker_id = w.id
+    JOIN schedule_entries se ON twa.schedule_entry_id = se.id
+    JOIN product_steps ps ON se.product_step_id = ps.id
+    WHERE twa.id = ?
+  `).get(assignmentId) as {
+    assignment_id: number;
+    schedule_entry_id: number;
+    worker_id: number;
+    actual_start_time: string | null;
+    actual_end_time: string | null;
+    actual_output: number;
+    status: string;
+    worker_name: string;
+    step_name: string;
+    category: string;
+    time_per_piece_seconds: number;
+    planned_output: number;
+  } | null;
+
+  if (!assignment) return null;
+
+  const outputHistory = getAssignmentOutputHistory(assignment.assignment_id);
+  const timeMetrics = getAssignmentTimeMetrics(assignment.assignment_id);
+
+  return {
+    assignmentId: assignment.assignment_id,
+    scheduleEntryId: assignment.schedule_entry_id,
+    workerId: assignment.worker_id,
+    workerName: assignment.worker_name,
+    stepName: assignment.step_name,
+    category: assignment.category,
+    timePerPieceSeconds: assignment.time_per_piece_seconds,
+    plannedOutput: assignment.planned_output,
+    currentOutput: assignment.actual_output,
+    startTime: assignment.actual_start_time,
+    endTime: assignment.actual_end_time,
+    status: assignment.status,
+    outputHistory,
+    timeMetrics,
+  };
+}
+
+// Get all assignment analytics for a worker
+export function getWorkerAssignmentAnalytics(workerId: number): AssignmentAnalytics[] {
+  const assignments = db.query(`
+    SELECT 
+      twa.id as assignment_id,
+      twa.schedule_entry_id,
+      twa.worker_id,
+      twa.actual_start_time,
+      twa.actual_end_time,
+      twa.actual_output,
+      twa.status,
+      w.name as worker_name,
+      ps.name as step_name,
+      ps.category,
+      ps.time_per_piece_seconds,
+      se.planned_output
+    FROM task_worker_assignments twa
+    JOIN workers w ON twa.worker_id = w.id
+    JOIN schedule_entries se ON twa.schedule_entry_id = se.id
+    JOIN product_steps ps ON se.product_step_id = ps.id
+    WHERE twa.worker_id = ?
+    AND twa.status IN ('in_progress', 'completed')
+    ORDER BY twa.assigned_at DESC
+    LIMIT 50
+  `).all(workerId) as {
+    assignment_id: number;
+    schedule_entry_id: number;
+    worker_id: number;
+    actual_start_time: string | null;
+    actual_end_time: string | null;
+    actual_output: number;
+    status: string;
+    worker_name: string;
+    step_name: string;
+    category: string;
+    time_per_piece_seconds: number;
+    planned_output: number;
+  }[];
+
+  return assignments.map(assignment => {
+    const outputHistory = getAssignmentOutputHistory(assignment.assignment_id);
+    const timeMetrics = getAssignmentTimeMetrics(assignment.assignment_id);
+
+    return {
+      assignmentId: assignment.assignment_id,
+      scheduleEntryId: assignment.schedule_entry_id,
+      workerId: assignment.worker_id,
+      workerName: assignment.worker_name,
+      stepName: assignment.step_name,
+      category: assignment.category,
+      timePerPieceSeconds: assignment.time_per_piece_seconds,
+      plannedOutput: assignment.planned_output,
+      currentOutput: assignment.actual_output,
+      startTime: assignment.actual_start_time,
+      endTime: assignment.actual_end_time,
+      status: assignment.status,
+      outputHistory,
+      timeMetrics,
+    };
+  });
+}

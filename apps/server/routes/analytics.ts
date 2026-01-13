@@ -4,6 +4,10 @@ import {
   getWorkerProficiencyHistory,
   calculateAutoAdjustments,
   applyProficiencyAdjustment,
+  getAssignmentOutputHistory,
+  getAssignmentTimeMetrics,
+  getAssignmentAnalytics,
+  getWorkerAssignmentAnalytics,
 } from "../services/analytics";
 
 export async function handleAnalytics(request: Request): Promise<Response | null> {
@@ -60,6 +64,48 @@ export async function handleAnalytics(request: Request): Promise<Response | null
       applied: adjustments.length,
       adjustments,
     });
+  }
+
+  // GET /api/analytics/assignments/:id/output-history - Get output history for an assignment
+  const assignmentHistoryMatch = url.pathname.match(/^\/api\/analytics\/assignments\/(\d+)\/output-history$/);
+  if (assignmentHistoryMatch && request.method === "GET") {
+    const assignmentId = parseInt(assignmentHistoryMatch[1]!);
+    const history = getAssignmentOutputHistory(assignmentId);
+    return Response.json(history);
+  }
+
+  // GET /api/analytics/assignments/:id/metrics - Get time-per-piece metrics and speedup data
+  const assignmentMetricsMatch = url.pathname.match(/^\/api\/analytics\/assignments\/(\d+)\/metrics$/);
+  if (assignmentMetricsMatch && request.method === "GET") {
+    const assignmentId = parseInt(assignmentMetricsMatch[1]!);
+    const metrics = getAssignmentTimeMetrics(assignmentId);
+    
+    if (!metrics) {
+      return Response.json({ error: "Assignment not found" }, { status: 404 });
+    }
+    
+    return Response.json(metrics);
+  }
+
+  // GET /api/analytics/assignments/:id - Get full assignment analytics
+  const assignmentAnalyticsMatch = url.pathname.match(/^\/api\/analytics\/assignments\/(\d+)$/);
+  if (assignmentAnalyticsMatch && request.method === "GET") {
+    const assignmentId = parseInt(assignmentAnalyticsMatch[1]!);
+    const analytics = getAssignmentAnalytics(assignmentId);
+    
+    if (!analytics) {
+      return Response.json({ error: "Assignment not found" }, { status: 404 });
+    }
+    
+    return Response.json(analytics);
+  }
+
+  // GET /api/analytics/workers/:id/assignments - Get all assignment analytics for a worker
+  const workerAssignmentsMatch = url.pathname.match(/^\/api\/analytics\/workers\/(\d+)\/assignments$/);
+  if (workerAssignmentsMatch && request.method === "GET") {
+    const workerId = parseInt(workerAssignmentsMatch[1]!);
+    const analytics = getWorkerAssignmentAnalytics(workerId);
+    return Response.json(analytics);
   }
 
   return null;

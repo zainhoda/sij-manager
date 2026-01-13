@@ -184,6 +184,13 @@ export async function handleScheduleEntries(request: Request): Promise<Response 
     const now = new Date();
     const timeStr = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
 
+    // Record initial output (0) in history when work starts
+    db.run(
+      `INSERT INTO assignment_output_history (assignment_id, output, recorded_at)
+       VALUES (?, 0, datetime('now'))`,
+      [assignmentId]
+    );
+
     const result = db.run(
       "UPDATE task_worker_assignments SET actual_start_time = ?, status = 'in_progress' WHERE id = ?",
       [timeStr, assignmentId]
@@ -207,6 +214,31 @@ export async function handleScheduleEntries(request: Request): Promise<Response 
   const assignmentCompleteMatch = url.pathname.match(/^\/api\/assignments\/(\d+)\/complete$/);
   if (assignmentCompleteMatch && request.method === "POST") {
     return handleCompleteAssignment(parseInt(assignmentCompleteMatch[1]!), request);
+  }
+
+  // GET /api/assignments/:id/output-history - get output history for analytics
+  const assignmentHistoryMatch = url.pathname.match(/^\/api\/assignments\/(\d+)\/output-history$/);
+  if (assignmentHistoryMatch && request.method === "GET") {
+    const assignmentId = parseInt(assignmentHistoryMatch[1]!);
+    
+    const history = db.query(`
+      SELECT 
+        aoh.id,
+        aoh.output,
+        aoh.recorded_at,
+        twa.actual_start_time
+      FROM assignment_output_history aoh
+      JOIN task_worker_assignments twa ON aoh.assignment_id = twa.id
+      WHERE aoh.assignment_id = ?
+      ORDER BY aoh.recorded_at ASC
+    `).all(assignmentId) as {
+      id: number;
+      output: number;
+      recorded_at: string;
+      actual_start_time: string | null;
+    }[];
+
+    return Response.json(history);
   }
 
   // PATCH /api/assignments/:id - update assignment (output, notes)
@@ -302,6 +334,13 @@ async function handleCompleteAssignment(assignmentId: number, request: Request):
     const now = new Date();
     const timeStr = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
 
+    // Record final output in history (non-destructive)
+    db.run(
+      `INSERT INTO assignment_output_history (assignment_id, output, recorded_at)
+       VALUES (?, ?, datetime('now'))`,
+      [assignmentId, body.actual_output]
+    );
+
     const result = db.run(
       `UPDATE task_worker_assignments
        SET actual_end_time = ?, actual_output = ?, status = 'completed', notes = COALESCE(?, notes)
@@ -340,9 +379,17 @@ async function handleUpdateAssignment(assignmentId: number, request: Request): P
     const updates: string[] = [];
     const values: (string | number | null)[] = [];
 
+    // If actual_output is being updated, record it in history (non-destructive)
     if (body.actual_output !== undefined) {
       updates.push("actual_output = ?");
       values.push(body.actual_output);
+      
+      // Insert history record with timestamp
+      db.run(
+        `INSERT INTO assignment_output_history (assignment_id, output, recorded_at)
+         VALUES (?, ?, datetime('now'))`,
+        [assignmentId, body.actual_output]
+      );
     }
     if (body.notes !== undefined) {
       updates.push("notes = ?");

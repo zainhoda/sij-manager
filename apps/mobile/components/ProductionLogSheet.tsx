@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, Alert, ScrollView, Pressable, Modal, FlatList } from 'react-native';
 import { Play, CheckCircle, Clock, UserPlus, X, User, Trash2 } from 'lucide-react-native';
+import { router } from 'expo-router';
 import { BottomSheet } from './BottomSheet';
 import { Button } from './Button';
 import { NumberInput } from './NumberInput';
 import { CategoryBadge } from './CategoryBadge';
 import { WorkerBadge } from './WorkerBadge';
+import { AssignmentAnalytics } from './AssignmentAnalytics';
 import { colors, spacing, typography, CategoryType } from '@/theme';
 import {
   ScheduleEntry,
@@ -53,6 +55,7 @@ function AssignmentRow({
   timePerPieceSeconds,
   onStart,
   onComplete,
+  onUpdate,
   onRemove,
   loading,
   isSupervisor,
@@ -61,6 +64,7 @@ function AssignmentRow({
   timePerPieceSeconds?: number;
   onStart: () => void;
   onComplete: (output: number) => void;
+  onUpdate: (output: number) => void;
   onRemove: () => void;
   loading: boolean;
   isSupervisor?: boolean;
@@ -140,6 +144,14 @@ function AssignmentRow({
             min={0}
             unit="pcs"
             size="small"
+          />
+          <Button
+            title="Update"
+            variant="secondary"
+            onPress={() => onUpdate(output)}
+            loading={loading}
+            size="small"
+            style={{ flex: 1 }}
           />
           <Button
             title="Complete"
@@ -281,6 +293,23 @@ export function ProductionLogSheet({
       onUpdated();
     } catch (error) {
       Alert.alert('Error', 'Failed to start work');
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const handleUpdateAssignment = async (assignmentId: number, output: number) => {
+    if (output < 0) {
+      Alert.alert('Error', 'Output cannot be negative');
+      return;
+    }
+
+    setLoading(assignmentId);
+    try {
+      await updateAssignment(assignmentId, { actual_output: output });
+      onUpdated();
+    } catch (error) {
+      Alert.alert('Error', 'Failed to update output');
     } finally {
       setLoading(null);
     }
@@ -486,6 +515,7 @@ export function ProductionLogSheet({
 
           {/* Worker Assignments Section */}
           {hasAssignments ? (
+            <>
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
                 <Text style={styles.sectionTitle}>
@@ -509,12 +539,34 @@ export function ProductionLogSheet({
                   timePerPieceSeconds={entry.time_per_piece_seconds}
                   onStart={() => handleStartAssignment(assignment.id)}
                   onComplete={(output) => handleCompleteAssignment(assignment.id, output)}
+                  onUpdate={(output) => handleUpdateAssignment(assignment.id, output)}
                   onRemove={() => handleRemoveWorker(assignment.worker_id)}
                   loading={loading === assignment.id}
                   isSupervisor={isSupervisor}
                 />
               ))}
             </View>
+
+            {/* Analytics Section - Show for assignments with history */}
+            {assignments.length > 0 && assignments.some(a => a.status === 'in_progress' || a.status === 'completed') && (
+              <View style={styles.section}>
+                {assignments
+                  .filter(a => a.status === 'in_progress' || a.status === 'completed')
+                  .map(assignment => (
+                    <AssignmentAnalytics
+                      key={`analytics-${assignment.id}`}
+                      assignmentId={assignment.id}
+                      timePerPieceSeconds={entry.time_per_piece_seconds}
+                      compact={true}
+                      onViewFull={() => {
+                        onClose();
+                        router.push(`/assignments/${assignment.id}/analytics`);
+                      }}
+                    />
+                  ))}
+              </View>
+            )}
+            </>
           ) : (
             /* Legacy: single worker mode */
             <>

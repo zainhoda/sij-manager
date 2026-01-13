@@ -26,10 +26,12 @@ export { WeekCalendar } from './WeekCalendar';
 export { FilterChip, FilterChipGroup } from './FilterChip';
 export { StatCard, StatGrid } from './StatCard';
 export { ProgressBar, SegmentedProgress, CircularProgress } from './ProgressBar';
+export { LineChart } from './LineChart';
 export { EmptyState, NoScheduleEmpty, NoWorkersEmpty, NoOrdersEmpty, NoResultsEmpty, NoProductsEmpty } from './EmptyState';
 export { Toast, ToastProvider, useToast } from './Toast';
 export { BottomSheet, ActionSheet } from './BottomSheet';
 export { ProductionLogSheet } from './ProductionLogSheet';
+export { AssignmentAnalytics } from './AssignmentAnalytics';
 export { SpreadsheetTable } from './SpreadsheetTable';
 export { QuickAddWorkerModal } from './QuickAddWorkerModal';
 
