@@ -183,22 +183,30 @@ export async function generateReplanDraft(scheduleId: number): Promise<ReplanRes
   // Get product steps with their info for scheduling
   const stepsResult = await db.execute({
     sql: `
-    SELECT ps.*,
-           (SELECT GROUP_CONCAT(depends_on_step_id) FROM step_dependencies WHERE step_id = ps.id) as deps
+    SELECT ps.*
     FROM product_steps ps
     WHERE ps.product_id = ?
     ORDER BY ps.sequence
   `,
     args: [order.product_id]
   });
-  const steps = stepsResult.rows as unknown as (ProductStep & { deps: string | null })[];
+  const steps = stepsResult.rows as unknown as ProductStep[];
 
-  // Build steps map
+  // Build steps map with dependencies
   const stepsMap = new Map<number, StepWithDependencies>();
   for (const step of steps) {
+    const depsResult = await db.execute({
+      sql: `SELECT depends_on_step_id, dependency_type FROM step_dependencies WHERE step_id = ?`,
+      args: [step.id]
+    });
+    const deps = depsResult.rows as unknown as { depends_on_step_id: number; dependency_type: string | null }[];
+
     stepsMap.set(step.id, {
       ...step,
-      dependencies: step.deps ? step.deps.split(",").map(Number) : [],
+      dependencies: deps.map(d => ({
+        stepId: d.depends_on_step_id,
+        type: (d.dependency_type as 'start' | 'finish') || 'finish',
+      })),
     });
   }
 

@@ -1,10 +1,6 @@
 @import "tailwindcss";
-
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+@source "./**/*.tsx";
+@source "../**/*.tsx";
 
 :root {
   --bg-primary: #f8fafc;
@@ -292,6 +288,27 @@ body {
 .status-badge.on_leave {
   background: #fef9c3;
   color: #854d0e;
+}
+
+/* Order status badges */
+.status-badge.pending {
+  background: #fef9c3;
+  color: #854d0e;
+}
+
+.status-badge.scheduled {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.status-badge.in_progress {
+  background: #f3e8ff;
+  color: #6b21a8;
+}
+
+.status-badge.completed {
+  background: #dcfce7;
+  color: #166534;
 }
 
 /* Select dropdown for editing */
@@ -1386,4 +1403,127 @@ body {
 
 .btn-delete:active {
   background: #fecaca;
+}
+
+/* Certification Matrix Styles */
+.matrix-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.matrix-toolbar .filter-select {
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.matrix-toolbar .filter-select:hover {
+  border-color: var(--accent-color);
+}
+
+.matrix-summary {
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin-left: auto;
+}
+
+.matrix-container {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: auto;
+  max-height: calc(100vh - 220px);
+}
+
+.certification-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.certification-matrix th,
+.certification-matrix td {
+  border: 1px solid var(--border-color);
+  text-align: center;
+}
+
+.certification-matrix th {
+  padding: 10px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--bg-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 80px;
+  min-width: 50px;
+}
+
+.certification-matrix .row-label-header,
+.certification-matrix .row-label {
+  text-align: left;
+  padding: 8px 12px;
+  position: sticky;
+  left: 0;
+  background: var(--bg-primary);
+  z-index: 5;
+  min-width: 120px;
+  max-width: 150px;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.certification-matrix thead th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.certification-matrix thead th.row-label-header {
+  z-index: 15;
+}
+
+.certification-matrix .col-header {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+  height: 100px;
+  vertical-align: bottom;
+  padding: 8px 4px;
+}
+
+.certification-matrix .cert-cell {
+  cursor: pointer;
+  min-width: 40px;
+  width: 40px;
+  height: 36px;
+  font-size: 14px;
+  transition: background 0.15s;
+  user-select: none;
+}
+
+.certification-matrix .cert-cell:hover {
+  background: rgba(59, 130, 246, 0.15);
+}
+
+.certification-matrix .cert-cell.certified {
+  background: #dcfce7;
+  color: #166534;
+  font-weight: 600;
+}
+
+.certification-matrix .cert-cell.certified:hover {
+  background: #bbf7d0;
+}
+
+.certification-matrix .cert-cell.pending {
+  background: #fef3c7;
+  color: #92400e;
+  pointer-events: none;
 }

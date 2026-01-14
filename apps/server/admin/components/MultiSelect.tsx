@@ -1,3 +1,4 @@
+// Force HMR reload
 import React, { useState, useRef, useEffect } from "react";
 
 export interface MultiSelectOption {
@@ -10,6 +11,7 @@ interface MultiSelectProps {
   value: (string | number)[];
   onChange: (value: (string | number)[]) => void;
   onClose?: () => void;
+  onToggle?: (newValue: (string | number)[]) => void; // Called after each toggle for immediate saves
   placeholder?: string;
   autoFocus?: boolean;
 }
@@ -19,6 +21,7 @@ export function MultiSelect({
   value,
   onChange,
   onClose,
+  onToggle,
   placeholder = "Select items...",
   autoFocus = false,
 }: MultiSelectProps) {
@@ -61,6 +64,9 @@ export function MultiSelect({
     const newValue = value.includes(optionValue)
       ? value.filter((v) => v !== optionValue)
       : [...value, optionValue];
+    console.log("MultiSelect toggleOption:", { optionValue, newValue, hasOnToggle: !!onToggle });
+    // Call onToggle FIRST to ensure it runs before any re-renders from onChange
+    onToggle?.(newValue);
     onChange(newValue);
   };
 

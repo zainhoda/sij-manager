@@ -46,21 +46,26 @@ export async function handleProducts(request: Request): Promise<Response | null>
     });
     const steps = stepsResult.rows as unknown as (ProductStep & { equipment_name: string | null })[];
 
-    // Get dependencies for each step
+    // Get dependencies for each step with dependency type
     const stepsWithDeps = await Promise.all(steps.map(async step => {
       const depsResult = await db.execute({
         sql: `
-        SELECT ps.* FROM product_steps ps
-        JOIN step_dependencies sd ON ps.id = sd.depends_on_step_id
+        SELECT sd.depends_on_step_id, sd.dependency_type
+        FROM step_dependencies sd
         WHERE sd.step_id = ?
       `,
         args: [step.id]
       });
-      const dependencies = depsResult.rows as unknown as ProductStep[];
+      const dependencies = depsResult.rows as unknown as Array<{ depends_on_step_id: number; dependency_type: string }>;
 
       return {
         ...step,
-        dependencies: dependencies.map(d => d.id),
+        // Include both simple array of IDs for backwards compatibility and detailed deps
+        dependencies: dependencies.map(d => d.depends_on_step_id),
+        dependencyDetails: dependencies.map(d => ({
+          stepId: d.depends_on_step_id,
+          type: d.dependency_type || 'finish',
+        })),
       };
     }));
 
@@ -68,10 +73,15 @@ export async function handleProducts(request: Request): Promise<Response | null>
   }
 
   // PUT /api/product-steps/:id/dependencies - replace all dependencies for a step
+  // Body can be: { dependsOn: [1, 2] } for simple IDs (defaults to 'finish')
+  // or: { dependencies: [{ stepId: 1, type: 'start' }, { stepId: 2, type: 'finish' }] } for typed deps
   const depsMatch = url.pathname.match(/^\/api\/product-steps\/(\d+)\/dependencies$/);
   if (depsMatch && request.method === "PUT") {
     const stepId = parseInt(depsMatch[1]!);
-    const body = await request.json() as { dependsOn: number[] };
+    const body = await request.json() as {
+      dependsOn?: number[];
+      dependencies?: Array<{ stepId: number; type: 'start' | 'finish' }>;
+    };
 
     // Validate step exists
     const existing = await db.execute({
@@ -84,14 +94,24 @@ export async function handleProducts(request: Request): Promise<Response | null>
 
     const productId = (existing.rows[0] as { product_id: number }).product_id;
 
+    // Normalize dependencies to array of { stepId, type }
+    const normalizedDeps: Array<{ stepId: number; type: 'start' | 'finish' }> = [];
+    if (body.dependencies && body.dependencies.length > 0) {
+      normalizedDeps.push(...body.dependencies);
+    } else if (body.dependsOn && body.dependsOn.length > 0) {
+      // Backwards compatible: simple IDs default to 'finish' type
+      normalizedDeps.push(...body.dependsOn.map(id => ({ stepId: id, type: 'finish' as const })));
+    }
+
     // Validate all dependency IDs exist and belong to the same product
-    if (body.dependsOn && body.dependsOn.length > 0) {
-      const placeholders = body.dependsOn.map(() => "?").join(",");
+    if (normalizedDeps.length > 0) {
+      const depIds = normalizedDeps.map(d => d.stepId);
+      const placeholders = depIds.map(() => "?").join(",");
       const validSteps = await db.execute({
         sql: `SELECT id FROM product_steps WHERE id IN (${placeholders}) AND product_id = ?`,
-        args: [...body.dependsOn, productId]
+        args: [...depIds, productId]
       });
-      if (validSteps.rows.length !== body.dependsOn.length) {
+      if (validSteps.rows.length !== depIds.length) {
         return Response.json({ error: "Invalid dependency IDs" }, { status: 400 });
       }
     }
@@ -102,23 +122,27 @@ export async function handleProducts(request: Request): Promise<Response | null>
       args: [stepId]
     });
 
-    // Insert new dependencies
-    for (const depId of body.dependsOn || []) {
+    // Insert new dependencies with type
+    for (const dep of normalizedDeps) {
       await db.execute({
-        sql: "INSERT INTO step_dependencies (step_id, depends_on_step_id) VALUES (?, ?)",
-        args: [stepId, depId]
+        sql: "INSERT INTO step_dependencies (step_id, depends_on_step_id, dependency_type) VALUES (?, ?, ?)",
+        args: [stepId, dep.stepId, dep.type]
       });
     }
 
-    // Return updated dependencies
+    // Return updated dependencies with types
     const deps = await db.execute({
-      sql: "SELECT depends_on_step_id FROM step_dependencies WHERE step_id = ?",
+      sql: "SELECT depends_on_step_id, dependency_type FROM step_dependencies WHERE step_id = ?",
       args: [stepId]
     });
 
     return Response.json({
       stepId,
-      dependencies: deps.rows.map((r: any) => r.depends_on_step_id)
+      dependencies: deps.rows.map((r: any) => r.depends_on_step_id),
+      dependencyDetails: deps.rows.map((r: any) => ({
+        stepId: r.depends_on_step_id,
+        type: r.dependency_type || 'finish',
+      })),
     });
   }
 

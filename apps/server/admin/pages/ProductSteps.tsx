@@ -17,6 +17,11 @@ import DataGrid, { Column, CellChangeContext } from "../components/DataGrid";
 import MultiSelect from "../components/MultiSelect";
 import { Trash2, Plus } from "lucide-react";
 
+interface DependencyDetail {
+  stepId: number;
+  type: 'start' | 'finish';
+}
+
 interface ProductStep {
   id: number;
   product_id: number;
@@ -28,6 +33,7 @@ interface ProductStep {
   equipment_id: number | null;
   equipment_name: string | null;  // Joined from equipment table
   dependencies: number[];
+  dependencyDetails?: DependencyDetail[];
 }
 
 interface Product {
@@ -626,16 +632,26 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
       };
     });
 
-    // Create edges from dependencies
+    // Create edges from dependencies with type-based styling
     const initialEdges: Edge[] = [];
     for (const step of steps) {
-      for (const depId of step.dependencies) {
+      // Use dependencyDetails if available, otherwise fall back to simple dependencies
+      const deps = step.dependencyDetails || step.dependencies.map(id => ({ stepId: id, type: 'finish' as const }));
+      for (const dep of deps) {
+        const isStartDep = dep.type === 'start';
         initialEdges.push({
-          id: `${depId}-${step.id}`,
-          source: String(depId),
+          id: `${dep.stepId}-${step.id}`,
+          source: String(dep.stepId),
           target: String(step.id),
-          animated: true,
-          style: { stroke: "#64748b", strokeWidth: 2 },
+          animated: !isStartDep, // Only animate finish dependencies
+          style: {
+            stroke: isStartDep ? "#22c55e" : "#64748b", // Green for start, gray for finish
+            strokeWidth: 2,
+            strokeDasharray: isStartDep ? "5,5" : undefined, // Dashed for start
+          },
+          label: isStartDep ? "start" : undefined,
+          labelStyle: { fontSize: 10, fill: "#22c55e" },
+          labelBgStyle: { fill: "white", fillOpacity: 0.8 },
         });
       }
     }
@@ -650,43 +666,70 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
     setEdges(layoutedEdges);
   }, [steps, setNodes, setEdges]);
 
+  // Helper to save dependencies immediately (used by both handleCellChange and direct onToggle)
+  const saveDependencies = useCallback(async (
+    stepId: number,
+    depType: 'start' | 'finish',
+    newIds: number[],
+    currentRow: ProductStep
+  ) => {
+    const otherType = depType === 'start' ? 'finish' : 'start';
+
+    // Get existing deps of the other type
+    const existingOther = (currentRow.dependencyDetails || []).filter(d => d.type === otherType);
+
+    // Combine new deps with existing deps of the other type
+    const newDepDetails = [
+      ...existingOther,
+      ...newIds.map(id => ({ stepId: id, type: depType }))
+    ];
+
+    console.log("Saving dependencies:", { stepId, depType, newIds, combined: newDepDetails });
+
+    // Optimistic update
+    setSteps((prev) =>
+      prev.map((s) => (s.id === stepId ? {
+        ...s,
+        dependencies: newDepDetails.map(d => d.stepId),
+        dependencyDetails: newDepDetails
+      } : s))
+    );
+
+    try {
+      const response = await fetch(`/api/product-steps/${stepId}/dependencies`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dependencies: newDepDetails }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        console.error("Update failed:", error);
+        // Revert
+        setSteps((prev) =>
+          prev.map((s) => (s.id === stepId ? { ...s, dependencies: currentRow.dependencies, dependencyDetails: currentRow.dependencyDetails } : s))
+        );
+      } else {
+        const updated = await response.json();
+        console.log("Dependencies updated:", updated);
+        // Update with server response
+        setSteps((prev) =>
+          prev.map((s) => (s.id === stepId ? { ...s, dependencies: updated.dependencies, dependencyDetails: updated.dependencyDetails } : s))
+        );
+      }
+    } catch (err) {
+      console.error("Network error:", err);
+      setSteps((prev) =>
+        prev.map((s) => (s.id === stepId ? { ...s, dependencies: currentRow.dependencies, dependencyDetails: currentRow.dependencyDetails } : s))
+      );
+    }
+  }, []);
+
   // Handle cell changes with metadata-aware routing
   const handleCellChange = useCallback(
     async ({ rowId, key, value, row, column }: CellChangeContext<ProductStep>) => {
-      // Special handling for dependencies (uses different endpoint)
-      if (key === "dependencies") {
-        const newDeps = value as number[];
-        console.log("Updating dependencies:", { stepId: rowId, newDeps });
-
-        // Optimistic update
-        setSteps((prev) =>
-          prev.map((s) => (s.id === rowId ? { ...s, dependencies: newDeps } : s))
-        );
-
-        try {
-          const response = await fetch(`/api/product-steps/${rowId}/dependencies`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ dependsOn: newDeps }),
-          });
-
-          if (!response.ok) {
-            const error = await response.json();
-            console.error("Update failed:", error);
-            // Revert
-            setSteps((prev) =>
-              prev.map((s) => (s.id === rowId ? { ...s, dependencies: row.dependencies } : s))
-            );
-          } else {
-            const updated = await response.json();
-            console.log("Dependencies updated:", updated);
-          }
-        } catch (err) {
-          console.error("Network error:", err);
-          setSteps((prev) =>
-            prev.map((s) => (s.id === rowId ? { ...s, dependencies: row.dependencies } : s))
-          );
-        }
+      // Skip columns that save immediately in their onChange handlers
+      if (key === "startDependencies" || key === "finishDependencies" || key === "equipment_id" || key === "category") {
         return;
       }
 
@@ -792,14 +835,39 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
             </span>
           );
         },
-        renderEdit: (value, onChange, onCommit, onCancel) => (
+        renderEdit: (value, onChange, onCommit, onCancel, row) => (
           <select
             className="cell-edit-select"
             value={String(value || "")}
-            onChange={(e) => onChange(e.target.value || null)}
-            onBlur={onCommit}
+            onChange={async (e) => {
+              const newVal = e.target.value || null;
+              onChange(newVal);
+
+              // Save immediately
+              setSteps((prev) =>
+                prev.map((s) => (s.id === row.id ? { ...s, category: newVal } : s))
+              );
+
+              try {
+                const response = await fetch(`/api/product-steps/${row.id}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ category: newVal }),
+                });
+                if (response.ok) {
+                  const updated = await response.json();
+                  setSteps((prev) =>
+                    prev.map((s) => (s.id === row.id ? { ...s, ...updated, dependencies: s.dependencies, dependencyDetails: s.dependencyDetails } : s))
+                  );
+                }
+              } catch (err) {
+                console.error("Failed to update category:", err);
+              }
+
+              onCommit();
+            }}
+            onBlur={() => {}}
             onKeyDown={(e) => {
-              if (e.key === "Enter") onCommit();
               if (e.key === "Escape") onCancel();
             }}
             autoFocus
@@ -846,17 +914,40 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
             {row.equipment_name || "None"}
           </span>
         ),
-        renderEdit: (value, onChange, onCommit, onCancel) => (
+        renderEdit: (value, onChange, onCommit, onCancel, row) => (
           <select
             className="cell-edit-select"
             value={value ?? ""}
-            onChange={(e) => {
+            onChange={async (e) => {
               const newVal = e.target.value ? parseInt(e.target.value) : null;
               onChange(newVal as any);
+
+              // Save immediately - don't wait for onCommit
+              const equipmentName = newVal ? equipment.find(eq => eq.id === newVal)?.name : null;
+              setSteps((prev) =>
+                prev.map((s) => (s.id === row.id ? { ...s, equipment_id: newVal, equipment_name: equipmentName } : s))
+              );
+
+              try {
+                const response = await fetch(`/api/product-steps/${row.id}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ equipment_id: newVal }),
+                });
+                if (response.ok) {
+                  const updated = await response.json();
+                  setSteps((prev) =>
+                    prev.map((s) => (s.id === row.id ? { ...s, ...updated, dependencies: s.dependencies, dependencyDetails: s.dependencyDetails } : s))
+                  );
+                }
+              } catch (err) {
+                console.error("Failed to update equipment:", err);
+              }
+
+              onCommit();
             }}
-            onBlur={onCommit}
+            onBlur={() => {}} // Don't save on blur - already saved on change
             onKeyDown={(e) => {
-              if (e.key === "Enter") onCommit();
               if (e.key === "Escape") onCancel();
             }}
             autoFocus
@@ -873,31 +964,28 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
         ),
       },
       {
-        key: "dependencies",
-        header: "Depends On",
-        width: 220,
+        key: "startDependencies" as keyof ProductStep,
+        header: "Starts With",
+        width: 160,
         editable: true,
-        meta: { table: "step_dependencies", foreignKey: "id" },
-        render: (value) => {
-          const deps = (value as number[]) || [];
+        meta: { table: "step_dependencies", foreignKey: "id", depType: "start" },
+        render: (_value, row) => {
+          const deps = (row.dependencyDetails || []).filter(d => d.type === 'start');
           if (deps.length === 0) {
-            return <span style={{ color: "#9ca3af" }}>None</span>;
+            return <span style={{ color: "#9ca3af" }}>—</span>;
           }
           return (
             <span style={{ fontSize: "12px" }}>
-              {deps
-                .map((depId) => {
-                  const depStep = steps.find((s) => s.id === depId);
-                  return depStep?.step_code || `?${depId}`;
-                })
-                .join(", ")}
+              {deps.map((dep) => {
+                const depStep = steps.find((s) => s.id === dep.stepId);
+                return depStep?.step_code || `?${dep.stepId}`;
+              }).join(", ")}
             </span>
           );
         },
-        renderEdit: (value, onChange, onCommit, onCancel, row) => {
-          const currentDeps = (value as number[]) || [];
+        renderEdit: (_value, onChange, onCommit, _onCancel, row) => {
+          const startDeps = (row.dependencyDetails || []).filter(d => d.type === 'start').map(d => d.stepId);
           const availableSteps = steps.filter((s) => s.id !== row.id);
-
           const options = availableSteps.map((s) => ({
             value: s.id,
             label: `${s.step_code} - ${s.name}`,
@@ -906,10 +994,55 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
           return (
             <MultiSelect
               options={options}
-              value={currentDeps}
+              value={startDeps}
               onChange={(newValue) => onChange(newValue as any)}
+              onToggle={(newValue) => {
+                console.log("onToggle called for start deps:", { stepId: row.id, newValue });
+                saveDependencies(row.id, 'start', newValue as number[], row);
+              }}
               onClose={onCommit}
-              placeholder="Select dependencies..."
+              placeholder="Select steps..."
+              autoFocus
+            />
+          );
+        },
+      },
+      {
+        key: "finishDependencies" as keyof ProductStep,
+        header: "After These Finish",
+        width: 180,
+        editable: true,
+        meta: { table: "step_dependencies", foreignKey: "id", depType: "finish" },
+        render: (_value, row) => {
+          const deps = (row.dependencyDetails || []).filter(d => d.type === 'finish');
+          if (deps.length === 0) {
+            return <span style={{ color: "#9ca3af" }}>—</span>;
+          }
+          return (
+            <span style={{ fontSize: "12px" }}>
+              {deps.map((dep) => {
+                const depStep = steps.find((s) => s.id === dep.stepId);
+                return depStep?.step_code || `?${dep.stepId}`;
+              }).join(", ")}
+            </span>
+          );
+        },
+        renderEdit: (_value, onChange, onCommit, _onCancel, row) => {
+          const finishDeps = (row.dependencyDetails || []).filter(d => d.type === 'finish').map(d => d.stepId);
+          const availableSteps = steps.filter((s) => s.id !== row.id);
+          const options = availableSteps.map((s) => ({
+            value: s.id,
+            label: `${s.step_code} - ${s.name}`,
+          }));
+
+          return (
+            <MultiSelect
+              options={options}
+              value={finishDeps}
+              onChange={(newValue) => onChange(newValue as any)}
+              onToggle={(newValue) => saveDependencies(row.id, 'finish', newValue as number[], row)}
+              onClose={onCommit}
+              placeholder="Select steps..."
               autoFocus
             />
           );
@@ -935,7 +1068,7 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
         ),
       },
     ],
-    [steps, equipment, handleDeleteStep]
+    [steps, equipment, handleDeleteStep, saveDependencies]
   );
 
   if (!productId) {
@@ -985,20 +1118,32 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
           />
         </ReactFlow>
       </div>
-      <div style={{ marginTop: "16px", marginBottom: "24px", display: "flex", gap: "16px", flexWrap: "wrap" }}>
-        {CATEGORY_ORDER.map((cat) => (
-          <div key={cat} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <div
-              style={{
-                width: "16px",
-                height: "16px",
-                borderRadius: "4px",
-                background: CATEGORY_COLORS[cat],
-              }}
-            />
-            <span style={{ fontSize: "12px", color: "#64748b" }}>{cat}</span>
+      <div style={{ marginTop: "16px", marginBottom: "24px", display: "flex", gap: "24px", flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: "16px", flexWrap: "wrap" }}>
+          {CATEGORY_ORDER.map((cat) => (
+            <div key={cat} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <div
+                style={{
+                  width: "16px",
+                  height: "16px",
+                  borderRadius: "4px",
+                  background: CATEGORY_COLORS[cat],
+                }}
+              />
+              <span style={{ fontSize: "12px", color: "#64748b" }}>{cat}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ borderLeft: "1px solid #e2e8f0", paddingLeft: "24px", display: "flex", gap: "16px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <div style={{ width: "24px", height: "2px", background: "#64748b" }} />
+            <span style={{ fontSize: "12px", color: "#64748b" }}>After finish</span>
           </div>
-        ))}
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <div style={{ width: "24px", height: "2px", background: "#22c55e", backgroundImage: "repeating-linear-gradient(90deg, #22c55e 0, #22c55e 5px, transparent 5px, transparent 10px)" }} />
+            <span style={{ fontSize: "12px", color: "#64748b" }}>Starts with</span>
+          </div>
+        </div>
       </div>
 
       {/* Spreadsheet view */}

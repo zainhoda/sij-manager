@@ -7,6 +7,8 @@ import "./index.css";
 import Workers from "./pages/Workers";
 import ProductSteps from "./pages/ProductSteps";
 import Import from "./pages/Import";
+import CertificationMatrix from "./pages/CertificationMatrix";
+import Orders from "./pages/Orders";
 
 function Dashboard() {
   return (
@@ -33,6 +35,7 @@ function App() {
             <Link href="/import">Import</Link>
             <Link href="/products">Products</Link>
             <Link href="/workers">Workers</Link>
+            <Link href="/certifications">Certifications</Link>
             <Link href="/orders">Orders</Link>
             <Link href="/schedules">Schedules</Link>
             <Link href="/equipment">Equipment</Link>
@@ -45,6 +48,8 @@ function App() {
             <Route path="/products/:id">{(params) => <ProductSteps params={params} />}</Route>
             <Route path="/products" component={ProductSteps} />
             <Route path="/workers" component={Workers} />
+            <Route path="/certifications" component={CertificationMatrix} />
+            <Route path="/orders" component={Orders} />
             <Route>
               <div className="page">
                 <h1>404 - Not Found</h1>

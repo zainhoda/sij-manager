@@ -48,9 +48,10 @@ export async function handleOrders(request: Request): Promise<Response | null> {
   // GET /api/orders - list all orders
   if (url.pathname === "/api/orders" && request.method === "GET") {
     const result = await db.execute(`
-      SELECT o.*, p.name as product_name
+      SELECT o.*, p.name as product_name, s.id as schedule_id
       FROM orders o
       JOIN products p ON o.product_id = p.id
+      LEFT JOIN schedules s ON s.order_id = o.id
       ORDER BY o.due_date
     `);
     const orders = result.rows;
@@ -133,7 +134,13 @@ async function handleCreateOrder(request: Request): Promise<Response> {
 
 async function handleUpdateOrder(request: Request, orderId: number): Promise<Response> {
   try {
-    const body = await request.json() as { status?: string };
+    const body = await request.json() as {
+      status?: string;
+      quantity?: number;
+      due_date?: string;
+      color?: string | null;
+      product_id?: number;
+    };
 
     const updates: string[] = [];
     const values: any[] = [];
@@ -146,6 +153,37 @@ async function handleUpdateOrder(request: Request, orderId: number): Promise<Res
       values.push(body.status);
     }
 
+    if (body.quantity !== undefined) {
+      if (body.quantity < 1) {
+        return Response.json({ error: "Quantity must be at least 1" }, { status: 400 });
+      }
+      updates.push("quantity = ?");
+      values.push(body.quantity);
+    }
+
+    if (body.due_date !== undefined) {
+      updates.push("due_date = ?");
+      values.push(body.due_date);
+    }
+
+    if ('color' in body) {
+      updates.push("color = ?");
+      values.push(body.color);
+    }
+
+    if (body.product_id !== undefined) {
+      // Verify product exists
+      const productResult = await db.execute({
+        sql: "SELECT id FROM products WHERE id = ?",
+        args: [body.product_id]
+      });
+      if (productResult.rows.length === 0) {
+        return Response.json({ error: "Product not found" }, { status: 404 });
+      }
+      updates.push("product_id = ?");
+      values.push(body.product_id);
+    }
+
     if (updates.length === 0) {
       return Response.json({ error: "No fields to update" }, { status: 400 });
     }
@@ -156,12 +194,19 @@ async function handleUpdateOrder(request: Request, orderId: number): Promise<Res
       args: values
     });
 
+    // Return updated order with product_name and schedule_id
     const orderResult = await db.execute({
-      sql: "SELECT * FROM orders WHERE id = ?",
+      sql: `
+        SELECT o.*, p.name as product_name, s.id as schedule_id
+        FROM orders o
+        JOIN products p ON o.product_id = p.id
+        LEFT JOIN schedules s ON s.order_id = o.id
+        WHERE o.id = ?
+      `,
       args: [orderId]
     });
-    const order = orderResult.rows[0] as unknown as Order | undefined;
-    
+    const order = orderResult.rows[0];
+
     if (!order) {
       return Response.json({ error: "Order not found" }, { status: 404 });
     }

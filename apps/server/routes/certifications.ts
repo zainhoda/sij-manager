@@ -4,6 +4,20 @@ import type { EquipmentCertification, Worker, Equipment } from "../db/schema";
 export async function handleCertifications(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
 
+  // GET /api/certifications/matrix - get matrix data for certification view
+  if (url.pathname === "/api/certifications/matrix" && request.method === "GET") {
+    const [workersResult, equipmentResult, certificationsResult] = await Promise.all([
+      db.execute("SELECT id, name, employee_id, status FROM workers ORDER BY name"),
+      db.execute("SELECT id, name, description FROM equipment ORDER BY name"),
+      db.execute("SELECT id, worker_id, equipment_id FROM equipment_certifications"),
+    ]);
+    return Response.json({
+      workers: workersResult.rows,
+      equipment: equipmentResult.rows,
+      certifications: certificationsResult.rows,
+    });
+  }
+
   // GET /api/certifications - list all certifications
   if (url.pathname === "/api/certifications" && request.method === "GET") {
     const result = await db.execute(`

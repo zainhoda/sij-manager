@@ -27,6 +27,12 @@ export interface ParsedEquipmentMatrix {
   workCategories: Set<string>;
 }
 
+// Dependency with type
+export interface ParsedDependency {
+  stepCode: string;
+  type: 'start' | 'finish';
+}
+
 // Parsed Product Steps types
 export interface ParsedProductStep {
   stepCode: string;           // ID column
@@ -35,7 +41,7 @@ export interface ParsedProductStep {
   taskName: string;           // Task column
   timePerPieceSeconds: number;
   equipmentCode: string;      // Equipment code column
-  dependencies: string[];     // Parsed from Dependency column
+  dependencies: ParsedDependency[];  // Parsed from Dependency column with type
   rowNumber: number;          // For error reporting
 }
 
@@ -262,12 +268,20 @@ export function parseProductSteps(content: string, format: 'tsv' | 'csv' = 'tsv'
     const stepCode = row[idIdx]?.trim();
     if (!stepCode) continue; // Skip rows without ID
 
-    // Parse dependencies (comma-separated)
-    let dependencies: string[] = [];
+    // Parse dependencies (comma-separated, with optional :start or :finish suffix)
+    // Format: "A1A" (defaults to finish), "A1A:start", "A1A:finish"
+    const dependencies: ParsedDependency[] = [];
     if (dependencyIdx >= 0) {
       const depStr = row[dependencyIdx]?.trim();
       if (depStr) {
-        dependencies = depStr.split(',').map(d => d.trim()).filter(d => d);
+        const depParts = depStr.split(',').map(d => d.trim()).filter(d => d);
+        for (const dep of depParts) {
+          const [stepCode, typeStr] = dep.split(':').map(s => s.trim());
+          if (stepCode) {
+            const type = typeStr?.toLowerCase() === 'start' ? 'start' : 'finish';
+            dependencies.push({ stepCode, type });
+          }
+        }
       }
     }
 

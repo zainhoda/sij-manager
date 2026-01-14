@@ -106,11 +106,13 @@ export async function ensureSchema(db: Client) {
   `);
 
   // Step dependencies (many-to-many)
+  // dependency_type: 'start' = can begin when dependency starts, 'finish' = must wait for dependency to complete
   await db.execute(`
     CREATE TABLE IF NOT EXISTS step_dependencies (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       step_id INTEGER NOT NULL,
       depends_on_step_id INTEGER NOT NULL,
+      dependency_type TEXT DEFAULT 'finish' CHECK (dependency_type IN ('start', 'finish')),
       FOREIGN KEY (step_id) REFERENCES product_steps(id),
       FOREIGN KEY (depends_on_step_id) REFERENCES product_steps(id),
       UNIQUE (step_id, depends_on_step_id)
@@ -287,6 +289,8 @@ export async function ensureSchema(db: Client) {
     "ALTER TABLE product_steps ADD COLUMN work_category_id INTEGER REFERENCES work_categories(id)",
     "ALTER TABLE product_steps ADD COLUMN component_id INTEGER REFERENCES components(id)",
     "ALTER TABLE product_steps ADD COLUMN step_code TEXT",
+    // Step dependencies migrations
+    "ALTER TABLE step_dependencies ADD COLUMN dependency_type TEXT DEFAULT 'finish'",
   ];
 
   for (const migration of migrations) {
@@ -346,6 +350,7 @@ export interface StepDependency {
   id: number;
   step_id: number;
   depends_on_step_id: number;
+  dependency_type: 'start' | 'finish';
 }
 
 export interface Order {

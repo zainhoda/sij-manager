@@ -22,8 +22,13 @@ export const MULTI_WORKER_CONFIG = {
   urgentDeadlineDays: 3,
 };
 
+export interface StepDependency {
+  stepId: number;
+  type: 'start' | 'finish';
+}
+
 export interface StepWithDependencies extends ProductStep {
-  dependencies: number[];
+  dependencies: StepDependency[];
 }
 
 interface ScheduleBlock {
@@ -282,9 +287,12 @@ export function advanceTime(startMinutes: number, minutesToAdd: number): number 
   return current;
 }
 
-// Check if all dependencies are completed before the given date/time
-function dependenciesComplete(
+// Check if all dependencies are satisfied before the given date/time
+// - 'finish' dependencies require the step to be completed
+// - 'start' dependencies only require the step to have started
+function dependenciesSatisfied(
   stepId: number,
+  startedSteps: Map<number, string>,   // stepId -> start date
   completedSteps: Map<number, string>, // stepId -> completion date
   stepsMap: Map<number, StepWithDependencies>,
   currentDate: string
@@ -292,10 +300,19 @@ function dependenciesComplete(
   const step = stepsMap.get(stepId);
   if (!step || step.dependencies.length === 0) return true;
 
-  for (const depId of step.dependencies) {
-    const completionDate = completedSteps.get(depId);
-    if (!completionDate || completionDate > currentDate) {
-      return false;
+  for (const dep of step.dependencies) {
+    if (dep.type === 'start') {
+      // For 'start' dependencies, check if the dependency has started
+      const startDate = startedSteps.get(dep.stepId);
+      if (!startDate || startDate > currentDate) {
+        return false;
+      }
+    } else {
+      // For 'finish' dependencies (default), check if the dependency is completed
+      const completionDate = completedSteps.get(dep.stepId);
+      if (!completionDate || completionDate > currentDate) {
+        return false;
+      }
     }
   }
   return true;
@@ -331,15 +348,18 @@ export async function generateSchedule(orderId: number): Promise<Schedule | null
   for (const step of steps) {
     const depsResult = await db.execute({
       sql: `
-      SELECT depends_on_step_id FROM step_dependencies WHERE step_id = ?
+      SELECT depends_on_step_id, dependency_type FROM step_dependencies WHERE step_id = ?
     `,
       args: [step.id]
     });
-    const deps = depsResult.rows as unknown as { depends_on_step_id: number }[];
+    const deps = depsResult.rows as unknown as { depends_on_step_id: number; dependency_type: string | null }[];
 
     stepsMap.set(step.id, {
       ...step,
-      dependencies: deps.map(d => d.depends_on_step_id),
+      dependencies: deps.map(d => ({
+        stepId: d.depends_on_step_id,
+        type: (d.dependency_type as 'start' | 'finish') || 'finish',
+      })),
     });
   }
 
@@ -361,7 +381,8 @@ export async function generateSchedule(orderId: number): Promise<Schedule | null
   });
   const scheduleId = Number(scheduleResult.lastInsertRowid);
 
-  // Track completed steps and their completion dates
+  // Track started and completed steps with their dates
+  const startedSteps = new Map<number, string>();   // stepId -> start date
   const completedSteps = new Map<number, string>(); // stepId -> completion date
   const pendingSteps = new Set(stepsMap.keys());
 
@@ -378,11 +399,16 @@ export async function generateSchedule(orderId: number): Promise<Schedule | null
     let foundStep = false;
 
     for (const stepId of pendingSteps) {
-      if (!dependenciesComplete(stepId, completedSteps, stepsMap, currentDateStr)) {
+      if (!dependenciesSatisfied(stepId, startedSteps, completedSteps, stepsMap, currentDateStr)) {
         continue;
       }
 
       const step = stepsMap.get(stepId)!;
+
+      // Mark step as started on the current date
+      if (!startedSteps.has(stepId)) {
+        startedSteps.set(stepId, currentDateStr);
+      }
 
       // Calculate total time needed for this step
       const totalSecondsNeeded = step.time_per_piece_seconds * order.quantity;

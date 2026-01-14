@@ -180,7 +180,7 @@ function detectCircularDependencies(steps: ParsedProductStep[]): string[] {
 
   // Build adjacency list
   for (const step of steps) {
-    graph.set(step.stepCode, step.dependencies.filter(d => stepCodes.has(d)));
+    graph.set(step.stepCode, step.dependencies.map(d => d.stepCode).filter(code => stepCodes.has(code)));
   }
 
   const visited = new Set<string>();
@@ -264,11 +264,11 @@ export function validateProductSteps(
 
     // Validate dependencies exist in this upload
     for (const dep of step.dependencies) {
-      if (!stepCodes.has(dep)) {
+      if (!stepCodes.has(dep.stepCode)) {
         warnings.push({
           row: step.rowNumber,
           field: 'Dependency',
-          message: `Dependency '${dep}' not found in upload`,
+          message: `Dependency '${dep.stepCode}' not found in upload`,
         });
       }
     }

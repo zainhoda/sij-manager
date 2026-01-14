@@ -240,12 +240,12 @@ async function executeProductStepsImport(
     const stepId = stepIds.get(step.stepCode);
     if (!stepId) continue;
 
-    for (const depCode of step.dependencies) {
-      const depStepId = stepIds.get(depCode);
+    for (const dep of step.dependencies) {
+      const depStepId = stepIds.get(dep.stepCode);
       if (depStepId) {
         await db.execute({
-          sql: "INSERT INTO step_dependencies (step_id, depends_on_step_id) VALUES (?, ?)",
-          args: [stepId, depStepId],
+          sql: "INSERT INTO step_dependencies (step_id, depends_on_step_id, dependency_type) VALUES (?, ?, ?)",
+          args: [stepId, depStepId, dep.type],
         });
         dependenciesCreated++;
       }
