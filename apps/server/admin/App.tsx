@@ -9,6 +9,8 @@ import ProductSteps from "./pages/ProductSteps";
 import Import from "./pages/Import";
 import CertificationMatrix from "./pages/CertificationMatrix";
 import Orders from "./pages/Orders";
+import Schedules from "./pages/Schedules";
+import ScheduleDetail from "./pages/ScheduleDetail";
 
 function Dashboard() {
   return (
@@ -50,6 +52,8 @@ function App() {
             <Route path="/workers" component={Workers} />
             <Route path="/certifications" component={CertificationMatrix} />
             <Route path="/orders" component={Orders} />
+            <Route path="/schedules/:id" component={ScheduleDetail} />
+            <Route path="/schedules" component={Schedules} />
             <Route>
               <div className="page">
                 <h1>404 - Not Found</h1>

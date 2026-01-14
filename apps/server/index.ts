@@ -9,6 +9,7 @@ import { handleProficiencies } from "./routes/proficiencies";
 import { handleAnalytics } from "./routes/analytics";
 import { handleScheduling } from "./routes/scheduling";
 import { handleImports } from "./routes/imports";
+import { handleWorkCategories } from "./routes/work-categories";
 
 // Admin frontend
 import adminHtml from "./admin/index.html";
@@ -127,6 +128,11 @@ const server = Bun.serve({
       }
 
       response = await handleImports(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
+
+      response = await handleWorkCategories(request);
       if (response) {
         return addCorsHeaders(response);
       }

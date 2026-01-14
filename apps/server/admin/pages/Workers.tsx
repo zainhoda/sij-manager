@@ -1,49 +1,194 @@
-import React, { useState } from "react";
-import DataGrid, { Column, CellChangeContext } from "../components/DataGrid";
+import React, { useState, useEffect, useCallback } from "react";
+import DataGrid from "../components/DataGrid";
+import type { Column, CellChangeContext } from "../components/DataGrid";
 
 interface Worker {
   id: number;
   name: string;
   employee_id: string | null;
   status: "active" | "inactive" | "on_leave";
-  skill_category: "SEWING" | "OTHER";
-  created_at: string;
 }
 
-// Generate more mock data for scrolling demo
-const generateMockWorkers = (): Worker[] => {
-  const firstNames = ["Maria", "Carlos", "Ana", "Luis", "Sofia", "Diego", "Isabella", "Miguel", "Valentina", "Alejandro", "Camila", "Andres", "Lucia", "Sebastian", "Mariana", "Jorge", "Paula", "Ricardo", "Elena", "Fernando"];
-  const lastNames = ["Garcia", "Rodriguez", "Martinez", "Hernandez", "Lopez", "Sanchez", "Ramirez", "Torres", "Flores", "Rivera", "Gomez", "Diaz", "Morales", "Reyes", "Castro", "Ortiz", "Gutierrez", "Chavez", "Ramos", "Vargas"];
-  const statuses: Worker["status"][] = ["active", "active", "active", "active", "inactive", "on_leave"];
-  const categories: Worker["skill_category"][] = ["SEWING", "SEWING", "SEWING", "OTHER"];
+interface AddWorkerModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSuccess: (worker: Worker) => void;
+}
 
-  return Array.from({ length: 50 }, (_, i) => ({
-    id: i + 1,
-    name: `${firstNames[i % firstNames.length]} ${lastNames[i % lastNames.length]}`,
-    employee_id: `EMP${String(i + 1).padStart(3, "0")}`,
-    status: statuses[i % statuses.length],
-    skill_category: categories[i % categories.length],
-    created_at: new Date(2024, Math.floor(i / 5), (i % 28) + 1).toISOString().split("T")[0],
-  }));
-};
+function AddWorkerModal({ isOpen, onClose, onSuccess }: AddWorkerModalProps) {
+  const [formData, setFormData] = useState({
+    name: "",
+    employee_id: "",
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setFormData({ name: "", employee_id: "" });
+      setError(null);
+    }
+  }, [isOpen]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.name.trim()) {
+      setError("Name is required");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/workers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: formData.name,
+          employee_id: formData.employee_id || null,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json() as { error?: string };
+        throw new Error(data.error || "Failed to create worker");
+      }
+
+      const newWorker = await response.json() as Worker;
+      onSuccess(newWorker);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create worker");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-xl font-semibold text-slate-900">Add New Worker</h2>
+          <button
+            className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-700 transition-colors text-xl"
+            onClick={onClose}
+          >
+            &times;
+          </button>
+        </div>
+
+        {error && <div className="error-banner">{error}</div>}
+
+        <form onSubmit={handleSubmit}>
+          <div className="mb-5">
+            <label htmlFor="name" className="block text-sm font-medium text-slate-700 mb-2">
+              Name *
+            </label>
+            <input
+              type="text"
+              id="name"
+              value={formData.name}
+              onChange={(e) => setFormData((prev) => ({ ...prev, name: (e.target as HTMLInputElement).value }))}
+              required
+              className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              placeholder="Enter worker name"
+            />
+          </div>
+
+          <div className="mb-5">
+            <label htmlFor="employee_id" className="block text-sm font-medium text-slate-700 mb-2">
+              Employee ID
+            </label>
+            <input
+              type="text"
+              id="employee_id"
+              value={formData.employee_id}
+              onChange={(e) => setFormData((prev) => ({ ...prev, employee_id: (e.target as HTMLInputElement).value }))}
+              className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              placeholder="e.g. EMP001"
+            />
+          </div>
+
+          <div className="flex justify-end gap-3 pt-5 border-t border-slate-200 mt-6">
+            <button
+              type="button"
+              className="px-4 py-2.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50"
+              onClick={onClose}
+              disabled={loading}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+              disabled={loading}
+            >
+              {loading ? "Creating..." : "Create Worker"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
 
 export default function Workers() {
-  const [workers, setWorkers] = useState<Worker[]>(generateMockWorkers);
+  const [workers, setWorkers] = useState<Worker[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAddModal, setShowAddModal] = useState(false);
 
-  const handleCellChange = ({ rowId, key, value, row, column }: CellChangeContext<Worker>) => {
-    // Determine which table to update based on column metadata
-    const table = column.meta?.table || "workers";
-    const foreignKey = column.meta?.foreignKey || "id";
-    const updateId = row[foreignKey as keyof Worker];
+  const fetchWorkers = useCallback(async () => {
+    try {
+      const response = await fetch("/api/workers");
+      const data = await response.json() as Worker[];
+      setWorkers(data);
+    } catch (error) {
+      console.error("Failed to fetch workers:", error);
+    }
+  }, []);
 
-    console.log(`Update ${table}.${String(key)} = ${value} WHERE id = ${updateId}`);
+  useEffect(() => {
+    fetchWorkers().finally(() => setLoading(false));
+  }, [fetchWorkers]);
 
-    // For now, just update local state
+  const handleCellChange = async ({
+    rowId,
+    key,
+    value,
+  }: CellChangeContext<Worker>) => {
+    const oldWorker = workers.find((w) => w.id === rowId);
+    if (!oldWorker) return;
+
+    // Optimistic update
     setWorkers((prev) =>
-      prev.map((w) =>
-        w.id === rowId ? { ...w, [key]: value } : w
-      )
+      prev.map((w) => (w.id === rowId ? { ...w, [key]: value } : w))
     );
+
+    try {
+      const response = await fetch(`/api/workers/${rowId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [key]: value }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to update worker");
+      }
+
+      const updatedWorker = await response.json() as Worker;
+      setWorkers((prev) =>
+        prev.map((w) => (w.id === rowId ? updatedWorker : w))
+      );
+    } catch (error) {
+      console.error("Failed to update worker:", error);
+      // Rollback on error
+      setWorkers((prev) =>
+        prev.map((w) => (w.id === rowId ? oldWorker : w))
+      );
+    }
   };
 
   const columns: Column<Worker>[] = [
@@ -51,7 +196,7 @@ export default function Workers() {
       key: "employee_id",
       header: "ID",
       width: 100,
-      editable: false,
+      editable: true,
     },
     {
       key: "name",
@@ -69,14 +214,23 @@ export default function Workers() {
           {String(value).replace("_", " ")}
         </span>
       ),
-      renderEdit: (value, onChange, onCommit, onCancel) => (
+      renderEdit: (value, onChange, onCommit, onCancel, row) => (
         <select
           className="cell-edit-select"
           value={String(value)}
-          onChange={(e) => onChange(e.target.value as Worker["status"])}
-          onBlur={onCommit}
+          onChange={async (e) => {
+            const newStatus = (e.target as HTMLSelectElement).value as Worker["status"];
+            await handleCellChange({
+              rowId: row.id,
+              key: "status",
+              value: newStatus,
+              row,
+              column: { key: "status", header: "Status" },
+            });
+            onCancel(); // Close editor without triggering another commit
+          }}
+          onBlur={onCancel}
           onKeyDown={(e) => {
-            if (e.key === "Enter") onCommit();
             if (e.key === "Escape") onCancel();
           }}
           autoFocus
@@ -87,46 +241,16 @@ export default function Workers() {
         </select>
       ),
     },
-    {
-      key: "skill_category",
-      header: "Category",
-      width: 120,
-      editable: true,
-      render: (value) => (
-        <span
-          style={{
-            fontWeight: 500,
-            color: value === "SEWING" ? "var(--accent-color)" : "var(--text-secondary)",
-          }}
-        >
-          {String(value)}
-        </span>
-      ),
-      renderEdit: (value, onChange, onCommit, onCancel) => (
-        <select
-          className="cell-edit-select"
-          value={String(value)}
-          onChange={(e) => onChange(e.target.value as Worker["skill_category"])}
-          onBlur={onCommit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") onCommit();
-            if (e.key === "Escape") onCancel();
-          }}
-          autoFocus
-        >
-          <option value="SEWING">SEWING</option>
-          <option value="OTHER">OTHER</option>
-        </select>
-      ),
-    },
-    {
-      key: "created_at",
-      header: "Joined",
-      width: 120,
-      editable: false,
-      render: (value) => new Date(String(value)).toLocaleDateString(),
-    },
   ];
+
+  if (loading) {
+    return (
+      <div className="page">
+        <h1>Workers</h1>
+        <p>Loading...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="page">
@@ -139,7 +263,9 @@ export default function Workers() {
         }}
       >
         <h1>Workers</h1>
-        <button className="btn btn-primary">Add Worker</button>
+        <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
+          Add Worker
+        </button>
       </div>
       <DataGrid
         data={workers}
@@ -147,6 +273,11 @@ export default function Workers() {
         onCellChange={handleCellChange}
         searchPlaceholder="Search workers..."
         height="calc(100vh - 180px)"
+      />
+      <AddWorkerModal
+        isOpen={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        onSuccess={(newWorker) => setWorkers((prev) => [...prev, newWorker])}
       />
     </div>
   );

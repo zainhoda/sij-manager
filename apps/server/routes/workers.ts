@@ -10,12 +10,17 @@ export async function handleWorkers(request: Request): Promise<Response | null> 
 
   // GET /api/workers - list all workers
   if (url.pathname === "/api/workers" && request.method === "GET") {
-    const result = await db.execute("SELECT * FROM workers ORDER BY name");
-    const workers = result.rows as unknown as Worker[];
+    const result = await db.execute(`
+      SELECT w.*, wc.name as work_category_name
+      FROM workers w
+      LEFT JOIN work_categories wc ON w.work_category_id = wc.id
+      ORDER BY w.name
+    `);
+    const workers = result.rows as unknown as (Worker & { work_category_name: string | null })[];
 
     // Get certifications for each worker
     // Note: This N+1 query pattern isn't ideal but we'll keep the logic structure for now, just making it async
-    const workersWithCerts: WorkerWithCertifications[] = [];
+    const workersWithCerts: (WorkerWithCertifications & { work_category_name: string | null })[] = [];
     for (const worker of workers) {
       const certsResult = await db.execute({
         sql: `
@@ -43,10 +48,15 @@ export async function handleWorkers(request: Request): Promise<Response | null> 
   if (workerMatch && request.method === "GET") {
     const workerId = parseInt(workerMatch[1]!);
     const result = await db.execute({
-      sql: "SELECT * FROM workers WHERE id = ?",
+      sql: `
+        SELECT w.*, wc.name as work_category_name
+        FROM workers w
+        LEFT JOIN work_categories wc ON w.work_category_id = wc.id
+        WHERE w.id = ?
+      `,
       args: [workerId]
     });
-    const worker = result.rows[0] as unknown as Worker | undefined;
+    const worker = result.rows[0] as unknown as (Worker & { work_category_name: string | null }) | undefined;
     
     if (!worker) {
       return Response.json({ error: "Worker not found" }, { status: 404 });
@@ -101,7 +111,8 @@ async function handleCreateWorker(request: Request): Promise<Response> {
     const body = await request.json() as {
       name: string;
       employee_id?: string;
-      skill_category?: 'SEWING' | 'OTHER'
+      skill_category?: 'SEWING' | 'OTHER';
+      work_category_id?: number | null;
     };
 
     if (!body.name) {
@@ -125,17 +136,33 @@ async function handleCreateWorker(request: Request): Promise<Response> {
       return Response.json({ error: "Invalid skill_category" }, { status: 400 });
     }
 
+    // Validate work_category_id if provided
+    if (body.work_category_id !== undefined && body.work_category_id !== null) {
+      const categoryResult = await db.execute({
+        sql: "SELECT id FROM work_categories WHERE id = ?",
+        args: [body.work_category_id]
+      });
+      if (categoryResult.rows.length === 0) {
+        return Response.json({ error: "Invalid work_category_id" }, { status: 400 });
+      }
+    }
+
     const result = await db.execute({
-      sql: "INSERT INTO workers (name, employee_id, skill_category) VALUES (?, ?, ?)",
-      args: [body.name, body.employee_id || null, skillCategory]
+      sql: "INSERT INTO workers (name, employee_id, skill_category, work_category_id) VALUES (?, ?, ?, ?)",
+      args: [body.name, body.employee_id || null, skillCategory, body.work_category_id ?? null]
     });
 
     const newWorkerResult = await db.execute({
-      sql: "SELECT * FROM workers WHERE id = ?",
-      args: [result.lastInsertRowid]
+      sql: `
+        SELECT w.*, wc.name as work_category_name
+        FROM workers w
+        LEFT JOIN work_categories wc ON w.work_category_id = wc.id
+        WHERE w.id = ?
+      `,
+      args: [Number(result.lastInsertRowid)]
     });
-    const worker = newWorkerResult.rows[0] as unknown as Worker;
-    
+    const worker = newWorkerResult.rows[0] as unknown as Worker & { work_category_name: string | null };
+
     return Response.json({ ...worker, certifications: [] }, { status: 201 });
   } catch {
     return Response.json({ error: "Invalid request body" }, { status: 400 });
@@ -149,6 +176,7 @@ async function handleUpdateWorker(request: Request, workerId: number): Promise<R
       employee_id?: string;
       status?: string;
       skill_category?: string;
+      work_category_id?: number | null;
     };
 
     const updates: string[] = [];
@@ -190,6 +218,20 @@ async function handleUpdateWorker(request: Request, workerId: number): Promise<R
       values.push(body.skill_category);
     }
 
+    if (body.work_category_id !== undefined) {
+      if (body.work_category_id !== null) {
+        const categoryResult = await db.execute({
+          sql: "SELECT id FROM work_categories WHERE id = ?",
+          args: [body.work_category_id]
+        });
+        if (categoryResult.rows.length === 0) {
+          return Response.json({ error: "Invalid work_category_id" }, { status: 400 });
+        }
+      }
+      updates.push("work_category_id = ?");
+      values.push(body.work_category_id);
+    }
+
     if (updates.length === 0) {
       return Response.json({ error: "No fields to update" }, { status: 400 });
     }
@@ -201,10 +243,15 @@ async function handleUpdateWorker(request: Request, workerId: number): Promise<R
     });
 
     const workerResult = await db.execute({
-      sql: "SELECT * FROM workers WHERE id = ?",
+      sql: `
+        SELECT w.*, wc.name as work_category_name
+        FROM workers w
+        LEFT JOIN work_categories wc ON w.work_category_id = wc.id
+        WHERE w.id = ?
+      `,
       args: [workerId]
     });
-    const worker = workerResult.rows[0] as unknown as Worker | undefined;
+    const worker = workerResult.rows[0] as unknown as (Worker & { work_category_name: string | null }) | undefined;
     
     if (!worker) {
       return Response.json({ error: "Worker not found" }, { status: 404 });
