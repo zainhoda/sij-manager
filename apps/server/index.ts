@@ -14,6 +14,7 @@ import { handleDashboard } from "./routes/dashboard";
 import { handleWorkCategories } from "./routes/work-categories";
 import { handleBuildVersions } from "./routes/build-versions";
 import { handleProductionSummary } from "./routes/production-summary";
+import { handlePlan } from "./routes/plan";
 
 // Admin frontend
 import adminHtml from "./admin/index.html";
@@ -157,6 +158,11 @@ const server = Bun.serve({
       }
 
       response = await handleProductionSummary(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
+
+      response = await handlePlan(request);
       if (response) {
         return addCorsHeaders(response);
       }

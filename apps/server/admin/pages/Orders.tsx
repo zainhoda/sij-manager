@@ -193,7 +193,6 @@ export default function Orders() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [generatingSchedule, setGeneratingSchedule] = useState<number | null>(null);
 
   const fetchOrders = useCallback(async () => {
     try {
@@ -278,37 +277,6 @@ export default function Orders() {
     } catch (error) {
       console.error("Failed to delete order:", error);
       alert(error instanceof Error ? error.message : "Failed to delete order");
-    }
-  };
-
-  const handleGenerateSchedule = async (orderId: number) => {
-    setGeneratingSchedule(orderId);
-    try {
-      const response = await fetch("/api/schedules/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ order_id: orderId }),
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "Failed to generate schedule");
-      }
-
-      const schedule = await response.json();
-      // Update order with new schedule_id and status
-      setOrders((prev) =>
-        prev.map((o) =>
-          o.id === orderId
-            ? { ...o, status: "scheduled", schedule_id: schedule.id }
-            : o
-        )
-      );
-    } catch (error) {
-      console.error("Failed to generate schedule:", error);
-      alert(error instanceof Error ? error.message : "Failed to generate schedule");
-    } finally {
-      setGeneratingSchedule(null);
     }
   };
 
@@ -477,23 +445,31 @@ export default function Orders() {
         return (
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             {row.status === "pending" && (
-              <button
-                className="btn btn-primary"
-                style={{ padding: "4px 8px", fontSize: 12 }}
-                onClick={() => handleGenerateSchedule(row.id)}
-                disabled={generatingSchedule === row.id}
-              >
-                {generatingSchedule === row.id ? "Generating..." : "Generate Schedule"}
-              </button>
-            )}
-            {row.schedule_id && (
               <Link
-                href={`/schedules/${row.schedule_id}`}
-                className="btn btn-secondary"
+                href={`/orders/${row.id}/plan`}
+                className="btn btn-primary"
                 style={{ padding: "4px 8px", fontSize: 12, textDecoration: "none" }}
               >
-                View Schedule
+                Create Plan
               </Link>
+            )}
+            {row.schedule_id && (
+              <>
+                <Link
+                  href={`/schedules/${row.schedule_id}`}
+                  className="btn btn-secondary"
+                  style={{ padding: "4px 8px", fontSize: 12, textDecoration: "none" }}
+                >
+                  View Schedule
+                </Link>
+                <Link
+                  href={`/orders/${row.id}/plan`}
+                  className="btn btn-secondary"
+                  style={{ padding: "4px 8px", fontSize: 12, textDecoration: "none" }}
+                >
+                  Replan
+                </Link>
+              </>
             )}
             <button
               className="btn btn-danger"

@@ -627,7 +627,10 @@ export async function getScheduleWithEntries(scheduleId: number) {
   // Enrich entries with assignments
   const enrichedEntries = await Promise.all(entries.map(async entry => {
     const assignments = await getAssignmentsForEntry(entry.id);
-    const totalActualOutput = assignments.reduce((sum, a) => sum + a.actual_output, 0);
+    // Use max (not sum) because multiple workers work on the same units, not separate units
+    const totalActualOutput = assignments.length > 0
+      ? Math.max(...assignments.map(a => a.actual_output))
+      : 0;
 
     return {
       ...entry,

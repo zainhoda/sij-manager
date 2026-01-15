@@ -16,6 +16,7 @@ interface ScheduleListItem {
     id: number;
     status: string;
   }>;
+  actualOutput: number;
   estimatedCost: number;
   actualCost: number;
   costVariance: number;
@@ -66,13 +67,12 @@ export default function Schedules() {
     }
   };
 
-  const getProgress = (entries: ScheduleListItem["entries"]) => {
-    if (entries.length === 0) return { completed: 0, total: 0, percent: 0 };
-    const completed = entries.filter((e) => e.status === "completed").length;
+  const getProgress = (row: ScheduleListItem) => {
+    if (row.quantity === 0) return { actual: 0, total: 0, percent: 0 };
     return {
-      completed,
-      total: entries.length,
-      percent: Math.round((completed / entries.length) * 100),
+      actual: row.actualOutput,
+      total: row.quantity,
+      percent: Math.round((row.actualOutput / row.quantity) * 100),
     };
   };
 
@@ -140,12 +140,12 @@ export default function Schedules() {
       render: (value) => new Date(String(value)).toLocaleDateString(),
     },
     {
-      key: "entries",
+      key: "actualOutput",
       header: "Progress",
-      width: 140,
+      width: 150,
       editable: false,
       render: (value, row) => {
-        const progress = getProgress(row.entries);
+        const progress = getProgress(row);
         return (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div
@@ -159,15 +159,15 @@ export default function Schedules() {
             >
               <div
                 style={{
-                  width: `${progress.percent}%`,
+                  width: `${Math.min(progress.percent, 100)}%`,
                   height: "100%",
-                  backgroundColor: progress.percent === 100 ? "#22c55e" : "#3b82f6",
+                  backgroundColor: progress.percent >= 100 ? "#22c55e" : "#3b82f6",
                   transition: "width 0.3s ease",
                 }}
               />
             </div>
-            <span style={{ fontSize: 12, color: "#64748b", minWidth: 45 }}>
-              {progress.completed}/{progress.total}
+            <span style={{ fontSize: 12, color: "#64748b", minWidth: 55 }}>
+              {progress.actual}/{progress.total}
             </span>
           </div>
         );
@@ -186,8 +186,7 @@ export default function Schedules() {
       width: 100,
       editable: false,
       render: (value, row) => {
-        const progress = getProgress(row.entries);
-        if (progress.completed === 0) return "-";
+        if (row.actualOutput === 0) return "-";
         return `$${Number(value || 0).toFixed(2)}`;
       },
     },

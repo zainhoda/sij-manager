@@ -35,6 +35,7 @@ import ScheduleDetail from "./pages/ScheduleDetail";
 import Equipment from "./pages/Equipment";
 import BuildVersions from "./pages/BuildVersions";
 import ProductionSummary from "./pages/ProductionSummary";
+import PlanEditor from "./pages/PlanEditor";
 
 interface NavItemProps {
   href: string;
@@ -135,6 +136,7 @@ function App() {
             <Route path="/certifications" component={CertificationMatrix} />
             <Route path="/equipment" component={Equipment} />
             <Route path="/orders" component={Orders} />
+            <Route path="/orders/:id/plan">{(params) => <PlanEditor params={params} />}</Route>
             <Route path="/schedules/:id" component={ScheduleDetail} />
             <Route path="/schedules" component={Schedules} />
             <Route path="/production-summary" component={ProductionSummary} />

@@ -56,10 +56,25 @@ export async function handleSchedules(request: Request): Promise<Response | null
       // Get cost summary for this schedule
       const costSummary = await getScheduleCostSummary(schedule.id);
 
+      // Calculate actual output from task_worker_assignments (using max per entry, not sum)
+      const outputResult = await db.execute({
+        sql: `
+          SELECT se.id as entry_id, MAX(twa.actual_output) as entry_output
+          FROM schedule_entries se
+          LEFT JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
+          WHERE se.schedule_id = ?
+          GROUP BY se.id
+        `,
+        args: [schedule.id]
+      });
+      const actualOutput = (outputResult.rows as unknown as { entry_id: number; entry_output: number | null }[])
+        .reduce((sum, row) => sum + (row.entry_output ?? 0), 0);
+
       return {
         ...schedule,
         entries,
         entriesByDate,
+        actualOutput,
         estimatedCost: costSummary?.estimatedTotalCost ?? 0,
         actualCost: costSummary?.actualTotalCost ?? 0,
         costVariance: costSummary?.variance ?? 0,

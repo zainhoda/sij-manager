@@ -301,6 +301,39 @@ export async function ensureSchema(db: Client) {
     )
   `);
 
+  // Schedule drafts (uncommitted plans)
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS schedule_drafts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL,
+      schedule_id INTEGER,
+
+      -- Settings
+      efficiency INTEGER NOT NULL DEFAULT 100,
+      worker_ids TEXT,
+      start_date TEXT NOT NULL,
+      allow_overtime INTEGER NOT NULL DEFAULT 0,
+
+      -- Projection (cached)
+      projected_end_date TEXT,
+      projected_end_time TEXT,
+      is_on_track INTEGER,
+      ideal_hours REAL,
+      adjusted_hours REAL,
+      labor_cost REAL,
+      equipment_cost REAL,
+
+      -- Draft entries stored as JSON
+      entries_json TEXT NOT NULL,
+
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+
+      FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+      FOREIGN KEY (schedule_id) REFERENCES schedules(id) ON DELETE CASCADE
+    )
+  `);
+
   // Create indexes for common queries
   await db.execute("CREATE INDEX IF NOT EXISTS idx_product_steps_product ON product_steps(product_id)");
   await db.execute("CREATE INDEX IF NOT EXISTS idx_product_steps_equipment ON product_steps(equipment_id)");
@@ -321,6 +354,8 @@ export async function ensureSchema(db: Client) {
   await db.execute("CREATE INDEX IF NOT EXISTS idx_task_worker_assignments_worker ON task_worker_assignments(worker_id)");
   await db.execute("CREATE INDEX IF NOT EXISTS idx_assignment_output_history_assignment ON assignment_output_history(assignment_id)");
   await db.execute("CREATE INDEX IF NOT EXISTS idx_assignment_output_history_recorded ON assignment_output_history(recorded_at)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_schedule_drafts_order ON schedule_drafts(order_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_schedule_drafts_schedule ON schedule_drafts(schedule_id)");
 
   // Migration: Add new columns to existing tables
   // These will fail silently if columns already exist
@@ -619,4 +654,24 @@ export interface BuildVersionMetrics {
   total_cost: number;
   sample_count: number;
   last_updated: string;
+}
+
+export interface ScheduleDraft {
+  id: number;
+  order_id: number;
+  schedule_id: number | null;
+  efficiency: number;
+  worker_ids: string | null;  // JSON array
+  start_date: string;
+  allow_overtime: number;
+  projected_end_date: string | null;
+  projected_end_time: string | null;
+  is_on_track: number | null;
+  ideal_hours: number | null;
+  adjusted_hours: number | null;
+  labor_cost: number | null;
+  equipment_cost: number | null;
+  entries_json: string;
+  created_at: string;
+  updated_at: string;
 }
