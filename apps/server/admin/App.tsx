@@ -17,6 +17,7 @@ import {
 import "./index.css";
 
 // Pages
+import Dashboard from "./pages/Dashboard";
 import Workers from "./pages/Workers";
 import ProductSteps from "./pages/ProductSteps";
 import Import from "./pages/Import";
@@ -70,35 +71,6 @@ function NavGroup({ title, children }: NavGroupProps) {
   );
 }
 
-function Dashboard() {
-  return (
-    <div className="page">
-      <h1>Dashboard</h1>
-      <p style={{ color: "var(--text-secondary)", marginBottom: "24px" }}>
-        Welcome to SIJ Manager Admin
-      </p>
-      <div className="dashboard-cards">
-        <Link href="/orders" className="dashboard-card">
-          <ClipboardList size={24} />
-          <span>Orders</span>
-        </Link>
-        <Link href="/schedules" className="dashboard-card">
-          <Calendar size={24} />
-          <span>Schedules</span>
-        </Link>
-        <Link href="/workers" className="dashboard-card">
-          <Users size={24} />
-          <span>Workers</span>
-        </Link>
-        <Link href="/products" className="dashboard-card">
-          <Package size={24} />
-          <span>Products</span>
-        </Link>
-      </div>
-    </div>
-  );
-}
-
 function Sidebar() {
   return (
     <aside className="sidebar">
@@ -112,6 +84,19 @@ function Sidebar() {
       <nav className="sidebar-nav">
         <NavItem href="/" icon={<LayoutDashboard size={18} />} label="Dashboard" />
 
+        <NavGroup title="Production">
+          <NavItem href="/production-summary" icon={<BarChart3 size={18} />} label="Summary" />
+          <NavItem href="/schedules" icon={<Calendar size={18} />} label="Schedules" />
+          <NavItem href="/orders" icon={<ClipboardList size={18} />} label="Orders" />
+        </NavGroup>
+
+        <NavGroup title="Setup">
+          <NavItem href="/products" icon={<Package size={18} />} label="Products" />
+          <NavItem href="/workers" icon={<Users size={18} />} label="Workers" />
+          <NavItem href="/certifications" icon={<Award size={18} />} label="Certifications" />
+          <NavItem href="/equipment" icon={<Wrench size={18} />} label="Equipment" />
+        </NavGroup>
+
         <NavGroup title="Import">
           <NavItem href="/import/worker-equipment" icon={<Upload size={18} />} label="1. Workers & Equipment" />
           <NavItem href="/import/products" icon={<Upload size={18} />} label="2. Products" />
@@ -121,19 +106,6 @@ function Sidebar() {
 
         <NavGroup title="Export">
           <NavItem href="/export" icon={<Download size={18} />} label="Export Data" />
-        </NavGroup>
-
-        <NavGroup title="Production">
-          <NavItem href="/orders" icon={<ClipboardList size={18} />} label="Orders" />
-          <NavItem href="/schedules" icon={<Calendar size={18} />} label="Schedules" />
-          <NavItem href="/production-summary" icon={<BarChart3 size={18} />} label="Summary" />
-        </NavGroup>
-
-        <NavGroup title="Setup">
-          <NavItem href="/products" icon={<Package size={18} />} label="Products" />
-          <NavItem href="/workers" icon={<Users size={18} />} label="Workers" />
-          <NavItem href="/certifications" icon={<Award size={18} />} label="Certifications" />
-          <NavItem href="/equipment" icon={<Wrench size={18} />} label="Equipment" />
         </NavGroup>
       </nav>
     </aside>

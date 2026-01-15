@@ -10,6 +10,7 @@ import { handleAnalytics } from "./routes/analytics";
 import { handleScheduling } from "./routes/scheduling";
 import { handleImports } from "./routes/imports";
 import { handleExports } from "./routes/exports";
+import { handleDashboard } from "./routes/dashboard";
 import { handleWorkCategories } from "./routes/work-categories";
 import { handleBuildVersions } from "./routes/build-versions";
 import { handleProductionSummary } from "./routes/production-summary";
@@ -79,6 +80,11 @@ const server = Bun.serve({
 
       // Route handlers
       let response: Response | null = null;
+
+      response = await handleDashboard(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
 
       response = await handleProducts(request);
       if (response) {

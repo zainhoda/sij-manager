@@ -89,6 +89,11 @@ export async function handleOrders(request: Request): Promise<Response | null> {
     return handleUpdateOrder(request, parseInt(orderMatch[1]!));
   }
 
+  // DELETE /api/orders/:id - delete order
+  if (orderMatch && request.method === "DELETE") {
+    return handleDeleteOrder(parseInt(orderMatch[1]!));
+  }
+
   return null;
 }
 
@@ -224,4 +229,63 @@ async function handleUpdateOrder(request: Request, orderId: number): Promise<Res
   } catch {
     return Response.json({ error: "Invalid request body" }, { status: 400 });
   }
+}
+
+async function handleDeleteOrder(orderId: number): Promise<Response> {
+  // Check if order exists
+  const orderResult = await db.execute({
+    sql: "SELECT id FROM orders WHERE id = ?",
+    args: [orderId]
+  });
+
+  if (orderResult.rows.length === 0) {
+    return Response.json({ error: "Order not found" }, { status: 404 });
+  }
+
+  // Delete in order: task_worker_assignments → schedule_entries → schedules → order
+  // (Foreign keys with ON DELETE CASCADE should handle most of this, but being explicit)
+
+  // Get schedule IDs for this order
+  const schedulesResult = await db.execute({
+    sql: "SELECT id FROM schedules WHERE order_id = ?",
+    args: [orderId]
+  });
+  const scheduleIds = (schedulesResult.rows as { id: number }[]).map(r => r.id);
+
+  if (scheduleIds.length > 0) {
+    // Get schedule entry IDs
+    const entriesResult = await db.execute({
+      sql: `SELECT id FROM schedule_entries WHERE schedule_id IN (${scheduleIds.map(() => '?').join(',')})`,
+      args: scheduleIds
+    });
+    const entryIds = (entriesResult.rows as { id: number }[]).map(r => r.id);
+
+    if (entryIds.length > 0) {
+      // Delete task worker assignments
+      await db.execute({
+        sql: `DELETE FROM task_worker_assignments WHERE schedule_entry_id IN (${entryIds.map(() => '?').join(',')})`,
+        args: entryIds
+      });
+
+      // Delete schedule entries
+      await db.execute({
+        sql: `DELETE FROM schedule_entries WHERE id IN (${entryIds.map(() => '?').join(',')})`,
+        args: entryIds
+      });
+    }
+
+    // Delete schedules
+    await db.execute({
+      sql: `DELETE FROM schedules WHERE id IN (${scheduleIds.map(() => '?').join(',')})`,
+      args: scheduleIds
+    });
+  }
+
+  // Delete the order
+  await db.execute({
+    sql: "DELETE FROM orders WHERE id = ?",
+    args: [orderId]
+  });
+
+  return Response.json({ success: true, message: "Order deleted" });
 }

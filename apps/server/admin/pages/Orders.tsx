@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Link } from "wouter";
+import { Trash2 } from "lucide-react";
 import DataGrid, { Column, CellChangeContext } from "../components/DataGrid";
 
 interface Product {
@@ -258,6 +259,28 @@ export default function Orders() {
     }
   };
 
+  const handleDeleteOrder = async (orderId: number) => {
+    if (!confirm("Are you sure you want to delete this order? This will also delete any associated schedules.")) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/orders/${orderId}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to delete order");
+      }
+
+      setOrders((prev) => prev.filter((o) => o.id !== orderId));
+    } catch (error) {
+      console.error("Failed to delete order:", error);
+      alert(error instanceof Error ? error.message : "Failed to delete order");
+    }
+  };
+
   const handleGenerateSchedule = async (orderId: number) => {
     setGeneratingSchedule(orderId);
     try {
@@ -360,7 +383,11 @@ export default function Orders() {
       header: "Due Date",
       width: 130,
       editable: true,
-      render: (value) => new Date(String(value)).toLocaleDateString(),
+      render: (value) => {
+        // Parse as local time to avoid timezone shift
+        const [year, month, day] = String(value).split('-').map(Number);
+        return new Date(year!, month! - 1, day!).toLocaleDateString();
+      },
       renderEdit: (value, onChange, onCommit, onCancel) => (
         <input
           type="date"
@@ -444,33 +471,40 @@ export default function Orders() {
     {
       key: "id",
       header: "Actions",
-      width: 150,
+      width: 200,
       editable: false,
       render: (value, row) => {
-        if (row.status === "pending") {
-          return (
+        return (
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {row.status === "pending" && (
+              <button
+                className="btn btn-primary"
+                style={{ padding: "4px 8px", fontSize: 12 }}
+                onClick={() => handleGenerateSchedule(row.id)}
+                disabled={generatingSchedule === row.id}
+              >
+                {generatingSchedule === row.id ? "Generating..." : "Generate Schedule"}
+              </button>
+            )}
+            {row.schedule_id && (
+              <Link
+                href={`/schedules/${row.schedule_id}`}
+                className="btn btn-secondary"
+                style={{ padding: "4px 8px", fontSize: 12, textDecoration: "none" }}
+              >
+                View Schedule
+              </Link>
+            )}
             <button
-              className="btn btn-primary"
+              className="btn btn-danger"
               style={{ padding: "4px 8px", fontSize: 12 }}
-              onClick={() => handleGenerateSchedule(row.id)}
-              disabled={generatingSchedule === row.id}
+              onClick={() => handleDeleteOrder(row.id)}
+              title="Delete order"
             >
-              {generatingSchedule === row.id ? "Generating..." : "Generate Schedule"}
+              <Trash2 size={14} />
             </button>
-          );
-        }
-        if (row.schedule_id) {
-          return (
-            <Link
-              href={`/schedules/${row.schedule_id}`}
-              className="btn btn-secondary"
-              style={{ padding: "4px 8px", fontSize: 12, textDecoration: "none" }}
-            >
-              View Schedule
-            </Link>
-          );
-        }
-        return null;
+          </div>
+        );
       },
     },
   ];
