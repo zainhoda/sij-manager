@@ -20,6 +20,11 @@ import Workers from "./pages/Workers";
 import ProductSteps from "./pages/ProductSteps";
 import Import from "./pages/Import";
 import ImportProductionData from "./pages/ImportProductionData";
+import ImportWizard from "./pages/ImportWizard";
+import ImportWorkerEquipment from "./pages/ImportWorkerEquipment";
+import ImportProducts from "./pages/ImportProducts";
+import ImportOrders from "./pages/ImportOrders";
+import ImportProductionHistory from "./pages/ImportProductionHistory";
 import CertificationMatrix from "./pages/CertificationMatrix";
 import Orders from "./pages/Orders";
 import Schedules from "./pages/Schedules";
@@ -106,8 +111,10 @@ function Sidebar() {
         <NavItem href="/" icon={<LayoutDashboard size={18} />} label="Dashboard" />
 
         <NavGroup title="Import">
-          <NavItem href="/import" icon={<Upload size={18} />} label="Equipment & Workers" />
-          <NavItem href="/import-production" icon={<FileSpreadsheet size={18} />} label="Production Data" />
+          <NavItem href="/import/worker-equipment" icon={<Upload size={18} />} label="1. Workers & Equipment" />
+          <NavItem href="/import/products" icon={<Upload size={18} />} label="2. Products" />
+          <NavItem href="/import/orders" icon={<Upload size={18} />} label="3. Orders" />
+          <NavItem href="/import/production-history" icon={<FileSpreadsheet size={18} />} label="4. Production History" />
         </NavGroup>
 
         <NavGroup title="Production">
@@ -135,6 +142,11 @@ function App() {
         <main className="main-content">
           <Switch>
             <Route path="/" component={Dashboard} />
+            <Route path="/import/worker-equipment" component={ImportWorkerEquipment} />
+            <Route path="/import/products" component={ImportProducts} />
+            <Route path="/import/orders" component={ImportOrders} />
+            <Route path="/import/production-history" component={ImportProductionHistory} />
+            <Route path="/import-wizard" component={ImportWizard} />
             <Route path="/import" component={Import} />
             <Route path="/import-production" component={ImportProductionData} />
             <Route path="/products/:id/build-versions">{(params) => <BuildVersions params={params} />}</Route>

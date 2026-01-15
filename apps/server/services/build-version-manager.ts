@@ -256,20 +256,21 @@ export async function reorderBuildVersionSteps(
 }
 
 /**
- * Delete a build version (only if not used by any orders)
+ * Delete a build version (only if not used by any schedules)
+ * Note: Version is now tracked on schedules, not orders
  */
 export async function deleteBuildVersion(buildVersionId: number): Promise<boolean> {
   const version = await getBuildVersion(buildVersionId);
   if (!version) return false;
 
-  // Check if any orders use this version
-  const ordersResult = await db.execute({
-    sql: `SELECT COUNT(*) as count FROM orders WHERE build_version_id = ?`,
+  // Check if any schedules use this version
+  const schedulesResult = await db.execute({
+    sql: `SELECT COUNT(*) as count FROM schedules WHERE build_version_id = ?`,
     args: [buildVersionId]
   });
-  const orderCount = (ordersResult.rows[0] as { count: number }).count;
-  if (orderCount > 0) {
-    throw new Error(`Cannot delete build version: ${orderCount} orders are using it`);
+  const scheduleCount = (schedulesResult.rows[0] as { count: number }).count;
+  if (scheduleCount > 0) {
+    throw new Error(`Cannot delete build version: ${scheduleCount} schedules are using it`);
   }
 
   // Check if it's the default

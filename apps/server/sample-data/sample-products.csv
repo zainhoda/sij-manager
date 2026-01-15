@@ -1,0 +1,14 @@
+product_name,version_name,version_number,is_default,step_code,external_id,category,component,task_name,time_seconds,equipment_code,dependencies
+Tactical Vest,v1.0 Standard,1,Y,A1A,MAT-001,SEWING,Small Velcro Pocket,Hem short edges,20,STS,
+Tactical Vest,v1.0 Standard,1,Y,A1B,MAT-002,SEWING,Small Velcro Pocket,Sew hook Velcro,25,STS,A1A
+Tactical Vest,v1.0 Standard,1,Y,A1C,MAT-003,SEWING,Small Velcro Pocket,Attach to main panel,30,STS,A1B
+Tactical Vest,v1.0 Standard,1,Y,CUT-01,MAT-010,CUTTING,Main Panel,Cut main fabric,45,CTL,
+Tactical Vest,v1.0 Standard,1,Y,SEW-01,MAT-011,SEWING,Main Panel,Sew main seams,60,STS,CUT-01:finish
+Tactical Vest,v1.0 Standard,1,Y,INS-01,,INSPECTION,Final,Quality check,30,INS,"SEW-01:finish,A1C:finish"
+Tactical Vest,v2.0 Lightweight,2,N,A1A,MAT-001,SEWING,Small Velcro Pocket,Hem short edges,18,STS,
+Tactical Vest,v2.0 Lightweight,2,N,A1B,MAT-002,SEWING,Small Velcro Pocket,Sew hook Velcro,22,STS,A1A
+Tactical Vest,v2.0 Lightweight,2,N,SEW-01,MAT-011,SEWING,Main Panel,Sew main seams,50,STS,A1B
+Tactical Vest,v2.0 Lightweight,2,N,INS-01,,INSPECTION,Final,Quality check,25,INS,SEW-01
+Medical Kit Pouch,v1.0,1,Y,M1,MED-001,CUTTING,Body,Cut material,30,CMA,
+Medical Kit Pouch,v1.0,1,Y,M2,MED-002,SEWING,Body,Sew edges,40,STS,M1
+Medical Kit Pouch,v1.0,1,Y,M3,MED-003,INSPECTION,Body,Inspect,20,INS,M2

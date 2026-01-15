@@ -1,0 +1,5 @@
+product_name,quantity,due_date,status
+Tactical Vest,500,2025-02-15,completed
+Tactical Vest,200,2025-03-01,in_progress
+Medical Kit Pouch,100,2025-02-20,pending
+Tactical Vest,300,2025-01-10,completed

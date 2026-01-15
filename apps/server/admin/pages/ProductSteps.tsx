@@ -341,15 +341,189 @@ function UploadStepsModal({
   );
 }
 
-const CATEGORY_COLORS: Record<string, string> = {
+// Base colors for known categories, with dynamic color generation for others
+const BASE_CATEGORY_COLORS: Record<string, string> = {
   CUTTING: "#ef4444",
+  "CUTTING DEPT.": "#ef4444",
   SILKSCREEN: "#f97316",
   PREP: "#eab308",
+  "PREP WORK": "#eab308",
   SEWING: "#22c55e",
+  "SEWING DEPT.": "#22c55e",
   INSPECTION: "#3b82f6",
+  "AUTO SEWING": "#06b6d4",
+  FINISHING: "#8b5cf6",
+  WAREHOUSE: "#64748b",
+  PACKING: "#ec4899",
 };
 
-const CATEGORY_ORDER = ["CUTTING", "SILKSCREEN", "PREP", "SEWING", "INSPECTION"];
+// Color palette for dynamic category colors
+const COLOR_PALETTE = [
+  "#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6",
+  "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16", "#f43f5e",
+  "#14b8a6", "#a855f7", "#6366f1", "#0ea5e9", "#10b981",
+];
+
+// Generate a consistent color for any category string
+function getCategoryColor(category: string): string {
+  if (!category) return "#6b7280";
+  const upperCat = category.toUpperCase();
+  if (BASE_CATEGORY_COLORS[upperCat]) {
+    return BASE_CATEGORY_COLORS[upperCat];
+  }
+  // Generate a consistent color based on string hash
+  let hash = 0;
+  for (let i = 0; i < category.length; i++) {
+    hash = category.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return COLOR_PALETTE[Math.abs(hash) % COLOR_PALETTE.length];
+}
+
+// Combobox component for category selection with ability to add new
+function CategoryCombobox({
+  value,
+  categories,
+  onChange,
+  onCancel,
+}: {
+  value: string;
+  categories: string[];
+  onChange: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const [inputValue, setInputValue] = useState(value);
+  const [isOpen, setIsOpen] = useState(true);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  // Filter categories based on input
+  const filteredCategories = categories.filter(cat =>
+    cat.toLowerCase().includes(inputValue.toLowerCase())
+  );
+
+  // Check if input is a new category (not in existing list)
+  const isNewCategory = inputValue.trim() &&
+    !categories.some(cat => cat.toLowerCase() === inputValue.toLowerCase());
+
+  const handleSelect = (cat: string) => {
+    onChange(cat);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (inputValue.trim()) {
+        onChange(inputValue.trim());
+      }
+    } else if (e.key === "Escape") {
+      onCancel();
+    } else if (e.key === "Tab") {
+      if (inputValue.trim()) {
+        onChange(inputValue.trim());
+      } else {
+        onCancel();
+      }
+    }
+  };
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        ref={inputRef}
+        type="text"
+        className="cell-edit-input"
+        value={inputValue}
+        onChange={(e) => {
+          setInputValue(e.target.value);
+          setIsOpen(true);
+        }}
+        onKeyDown={handleKeyDown}
+        onBlur={() => {
+          // Delay to allow click on dropdown
+          setTimeout(() => setIsOpen(false), 150);
+        }}
+        placeholder="Type or select..."
+        style={{ width: "100%" }}
+      />
+      {isOpen && (filteredCategories.length > 0 || isNewCategory) && (
+        <div
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            background: "white",
+            border: "1px solid #e2e8f0",
+            borderRadius: "6px",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+            maxHeight: "200px",
+            overflowY: "auto",
+            zIndex: 1000,
+            marginTop: "2px",
+          }}
+        >
+          {isNewCategory && (
+            <div
+              style={{
+                padding: "8px 12px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                borderBottom: filteredCategories.length > 0 ? "1px solid #e2e8f0" : "none",
+                background: "#f0fdf4",
+              }}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                handleSelect(inputValue.trim());
+              }}
+            >
+              <Plus size={14} style={{ color: "#22c55e" }} />
+              <span style={{ color: "#22c55e", fontWeight: 500 }}>Create "{inputValue.trim()}"</span>
+            </div>
+          )}
+          {filteredCategories.map((cat) => (
+            <div
+              key={cat}
+              style={{
+                padding: "8px 12px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+              }}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                handleSelect(cat);
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "#f1f5f9";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "white";
+              }}
+            >
+              <span
+                style={{
+                  width: "12px",
+                  height: "12px",
+                  borderRadius: "3px",
+                  background: getCategoryColor(cat),
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ fontSize: "13px" }}>{cat}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const NODE_WIDTH = 180;
 const NODE_HEIGHT = 80;
@@ -383,7 +557,7 @@ function getLayoutedElements(nodes: Node[], edges: Edge[]) {
 }
 
 function StepNode({ data }: { data: { label: string; category: string; time: number } }) {
-  const bgColor = CATEGORY_COLORS[data.category] || "#6b7280";
+  const bgColor = getCategoryColor(data.category);
   return (
     <div
       style={{
@@ -814,73 +988,67 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
       {
         key: "category",
         header: "Category",
-        width: 120,
+        width: 160,
         editable: true,
         meta: { table: "product_steps", foreignKey: "id" },
         render: (value) => {
           const cat = String(value || "");
-          const color = CATEGORY_COLORS[cat] || "#6b7280";
+          const color = getCategoryColor(cat);
           return (
             <span
               style={{
                 display: "inline-block",
                 padding: "2px 8px",
                 borderRadius: "4px",
-                background: color,
-                color: "white",
+                background: cat ? color : "transparent",
+                color: cat ? "white" : "#9ca3af",
                 fontSize: "11px",
                 fontWeight: 500,
+                border: cat ? "none" : "1px dashed #d1d5db",
               }}
             >
               {cat || "—"}
             </span>
           );
         },
-        renderEdit: (value, onChange, onCommit, onCancel, row) => (
-          <select
-            className="cell-edit-select"
-            value={String(value || "")}
-            onChange={async (e) => {
-              const newVal = e.target.value || null;
-              onChange(newVal);
+        renderEdit: (value, onChange, onCommit, onCancel, row) => {
+          // Get unique categories from all steps
+          const existingCategories = [...new Set(steps.map(s => s.category).filter(Boolean))] as string[];
 
-              // Save immediately
-              setSteps((prev) =>
-                prev.map((s) => (s.id === row.id ? { ...s, category: newVal } : s))
-              );
+          return (
+            <CategoryCombobox
+              value={String(value || "")}
+              categories={existingCategories}
+              onChange={async (newVal) => {
+                onChange(newVal || null);
 
-              try {
-                const response = await fetch(`/api/product-steps/${row.id}`, {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ category: newVal }),
-                });
-                if (response.ok) {
-                  const updated = await response.json();
-                  setSteps((prev) =>
-                    prev.map((s) => (s.id === row.id ? { ...s, ...updated, dependencies: s.dependencies, dependencyDetails: s.dependencyDetails } : s))
-                  );
+                // Save immediately
+                setSteps((prev) =>
+                  prev.map((s) => (s.id === row.id ? { ...s, category: newVal || null } : s))
+                );
+
+                try {
+                  const response = await fetch(`/api/product-steps/${row.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ category: newVal || null }),
+                  });
+                  if (response.ok) {
+                    const updated = await response.json();
+                    setSteps((prev) =>
+                      prev.map((s) => (s.id === row.id ? { ...s, ...updated, dependencies: s.dependencies, dependencyDetails: s.dependencyDetails } : s))
+                    );
+                  }
+                } catch (err) {
+                  console.error("Failed to update category:", err);
                 }
-              } catch (err) {
-                console.error("Failed to update category:", err);
-              }
 
-              onCommit();
-            }}
-            onBlur={() => {}}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") onCancel();
-            }}
-            autoFocus
-          >
-            <option value="">—</option>
-            {CATEGORY_ORDER.map((cat) => (
-              <option key={cat} value={cat}>
-                {cat}
-              </option>
-            ))}
-          </select>
-        ),
+                onCommit();
+              }}
+              onCancel={onCancel}
+            />
+          );
+        },
       },
       {
         key: "time_per_piece_seconds",
@@ -1123,21 +1291,21 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
           <Background color="#e2e8f0" gap={16} />
           <Controls />
           <MiniMap
-            nodeColor={(node) => CATEGORY_COLORS[node.data?.category as string] || "#6b7280"}
+            nodeColor={(node) => getCategoryColor(node.data?.category as string)}
             maskColor="rgba(255, 255, 255, 0.8)"
           />
         </ReactFlow>
       </div>
       <div style={{ marginTop: "16px", marginBottom: "24px", display: "flex", gap: "24px", flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ display: "flex", gap: "16px", flexWrap: "wrap" }}>
-          {CATEGORY_ORDER.map((cat) => (
+          {[...new Set(steps.map(s => s.category).filter(Boolean))].map((cat) => (
             <div key={cat} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <div
                 style={{
                   width: "16px",
                   height: "16px",
                   borderRadius: "4px",
-                  background: CATEGORY_COLORS[cat],
+                  background: getCategoryColor(cat as string),
                 }}
               />
               <span style={{ fontSize: "12px", color: "#64748b" }}>{cat}</span>
@@ -1220,13 +1388,16 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
                 }}
               />
             </div>
-            <div style={{ flex: "0 0 120px" }}>
+            <div style={{ flex: "0 0 160px", position: "relative" }}>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 500, marginBottom: "4px" }}>
                 Category
               </label>
-              <select
+              <input
+                type="text"
+                list="category-options"
                 value={newStep.category}
                 onChange={(e) => setNewStep({ ...newStep, category: e.target.value })}
+                placeholder="Type or select..."
                 style={{
                   width: "100%",
                   padding: "8px",
@@ -1234,12 +1405,12 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
                   borderRadius: "6px",
                   fontSize: "13px"
                 }}
-              >
-                <option value="">—</option>
-                {CATEGORY_ORDER.map((cat) => (
-                  <option key={cat} value={cat}>{cat}</option>
+              />
+              <datalist id="category-options">
+                {[...new Set(steps.map(s => s.category).filter(Boolean))].map((cat) => (
+                  <option key={cat} value={cat} />
                 ))}
-              </select>
+              </datalist>
             </div>
             <div style={{ flex: "0 0 100px" }}>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 500, marginBottom: "4px" }}>

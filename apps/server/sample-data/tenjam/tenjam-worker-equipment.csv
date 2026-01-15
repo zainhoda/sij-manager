@@ -1,0 +1,31 @@
+equipment_code,work_category,work_type,station_count,hourly_cost,Obet,Noe,Fransisco,Pilar,Patty,Oralia S,Norma,Oralia R,Maricella,Angelica,Jackie,Cyndi,Julieta
+_COST,,Worker Cost Per Hour,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+CTL,Cutting,Cutting - Team Lead,100,0,Y,,,,,,,,,,,,
+CMA,Cutting,Cutting - Manual,1,0,Y,,,,,,,,,,,,
+CA,Cutting,Cutting - Automated Skilled,1,0,Y,,,,,,,,,,,Y,
+CAU,Cutting,Cutting - Automated Unskilled,100,0,Y,Y,Y,Y,Y,Y,,Y,Y,Y,Y,Y,Y
+CMIS,Cutting,Cutting - Miscellaneous,1,0,Y,,,Y,Y,Y,Y,Y,Y,Y,Y,Y,Y
+ESU,Embellishment Silkscreening,Embellishment Silkscreening - UV,2,0,,,,Y,Y,,,,,,,,
+ESH,Embellishment Silkscreening,Embellishment Silkscreening - Heat,2,0,,,,Y,Y,,,,,,,,
+ESC,Embellishment Silkscreening,Embellishment Silkscreening - Catching,100,0,Y,Y,Y,Y,Y,Y,,Y,Y,Y,Y,Y,Y
+ASTL,Auto Sewing,Auto Sewing - Team Lead,100,0,,,,,,Y,,,,,,,
+ASL,Auto Sewing,Auto Sewing - Large,2,0,,,,,,Y,,,,,,,Y
+ASM,Auto Sewing,Auto Sewing - Medium,1,0,,,,,,Y,,,,,,,Y
+ASS,Auto Sewing,Auto Sewing - Small,1,0,,,,,,Y,,,,,,,Y
+STL,Sewing,Sewing - Team Lead,100,0,,,,,,,Y,,,,,,
+STS,Sewing,Sewing - Top Stitch Single Needle,5,0,,,,,,Y,Y,Y,Y,Y,Y,Y,
+STD,Sewing,Sewing - Top Stitch Double Needle,2,0,,,,,,Y,Y,Y,Y,Y,Y,Y,
+STSZF,Sewing,Sewing - Top Stitch Single Needle Zipper Foot,1,0,,,,,,Y,Y,Y,Y,Y,Y,Y,
+SBT,Sewing,Sewing - Bar Tac,2,0,,,,,,Y,Y,Y,Y,Y,Y,Y,
+SZZ,Sewing,Sewing - Zigzag,1,0,,,,,,Y,Y,Y,Y,Y,Y,Y,
+FR,Finishing,Finishing - Rivet,1,0,,,,Y,Y,Y,Y,Y,Y,Y,Y,Y,Y
+FG,Finishing,Finishing - Grommet,1,0,,,,Y,Y,Y,Y,Y,Y,Y,Y,Y,Y
+FCL,Finishing,Finishing - cleanup,100,0,Y,Y,Y,Y,Y,Y,Y,Y,Y,Y,Y,Y,Y
+QCO,Quality Control Outgoing,Quality Control Outgoing,100,0,Y,,,Y,Y,Y,Y,Y,Y,Y,Y,Y,Y
+PAC,Packing,Packing,100,0,Y,Y,Y,Y,Y,Y,Y,Y,Y,Y,Y,Y,Y
+WRE,Warehouse,Warehouse - Receiving,100,0,Y,Y,Y,,,,,,,,,,
+WIQC,Warehouse,Warehouse - Incoming Quality Control,100,0,Y,,,,,,,,,,,,
+WFL,Warehouse,Warehouse - Forklift,1,0,Y,,,,,Y,,,,,,,
+WOP,Warehouse,Warehouse - Order Picking,100,0,Y,Y,Y,,,,,,,,,,
+WCC,Warehouse,Warehouse - Cycle Counting,100,0,Y,Y,Y,,,,,,,,,,
+WS,Warehouse,Warehouse - Shipping,100,0,Y,Y,Y,,,,,,,,,,

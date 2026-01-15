@@ -732,6 +732,7 @@ export interface BuildVersionMetricsSummary {
 }
 
 // Get metrics for a build version
+// Note: Version is now tracked on schedules, not orders
 export async function getBuildVersionMetrics(buildVersionId: number): Promise<BuildVersionMetricsSummary | null> {
   // Get build version info
   const versionResult = await db.execute({
@@ -751,16 +752,17 @@ export async function getBuildVersionMetrics(buildVersionId: number): Promise<Bu
 
   if (!version) return null;
 
-  // Get orders using this build version
-  const ordersResult = await db.execute({
+  // Get schedules (and their orders) using this build version
+  const schedulesResult = await db.execute({
     sql: `
-    SELECT o.id, o.quantity
-    FROM orders o
-    WHERE o.build_version_id = ?
+    SELECT DISTINCT s.order_id, o.quantity
+    FROM schedules s
+    JOIN orders o ON s.order_id = o.id
+    WHERE s.build_version_id = ?
   `,
     args: [buildVersionId]
   });
-  const orders = ordersResult.rows as unknown as { id: number; quantity: number }[];
+  const orders = schedulesResult.rows as unknown as { order_id: number; quantity: number }[];
 
   // Calculate total units produced from completed schedule entries
   const metricsResult = await db.execute({
@@ -768,11 +770,10 @@ export async function getBuildVersionMetrics(buildVersionId: number): Promise<Bu
     SELECT
       SUM(twa.actual_output) as total_units,
       COUNT(DISTINCT se.id) as sample_count
-    FROM orders o
-    JOIN schedules s ON s.order_id = o.id
+    FROM schedules s
     JOIN schedule_entries se ON se.schedule_id = s.id
     JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-    WHERE o.build_version_id = ?
+    WHERE s.build_version_id = ?
     AND twa.status = 'completed'
   `,
     args: [buildVersionId]
@@ -793,11 +794,10 @@ export async function getBuildVersionMetrics(buildVersionId: number): Promise<Bu
           ELSE 0
         END
       ) as total_seconds
-    FROM orders o
-    JOIN schedules s ON s.order_id = o.id
+    FROM schedules s
     JOIN schedule_entries se ON se.schedule_id = s.id
     JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-    WHERE o.build_version_id = ?
+    WHERE s.build_version_id = ?
     AND twa.status = 'completed'
   `,
     args: [buildVersionId]

@@ -319,7 +319,11 @@ function dependenciesSatisfied(
   return true;
 }
 
-export async function generateSchedule(orderId: number): Promise<Schedule | null> {
+export interface GenerateScheduleOptions {
+  buildVersionId?: number;
+}
+
+export async function generateSchedule(orderId: number, options?: GenerateScheduleOptions): Promise<Schedule | null> {
   // Get order
   const orderResult = await db.execute({
     sql: "SELECT * FROM orders WHERE id = ?",
@@ -333,12 +337,16 @@ export async function generateSchedule(orderId: number): Promise<Schedule | null
   const today = new Date();
   const daysUntilDeadline = Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 
-  // Get steps from build version (or default build version, or fall back to all product steps)
+  // Determine which build version to use:
+  // 1. If explicitly provided in options, use that
+  // 2. Otherwise, use the product's default build version
+  // 3. Fall back to all product steps (legacy behavior)
   let steps: ProductStep[];
-  let buildVersionId = order.build_version_id;
+  let buildVersionId: number | null = null;
 
-  if (buildVersionId) {
-    // Use the order's specified build version
+  if (options?.buildVersionId) {
+    // Use the explicitly provided build version
+    buildVersionId = options.buildVersionId;
     const buildVersionSteps = await getBuildVersionSteps(buildVersionId);
     steps = buildVersionSteps.map(s => ({ ...s, sequence: s.build_sequence }));
   } else {
@@ -348,12 +356,6 @@ export async function generateSchedule(orderId: number): Promise<Schedule | null
       buildVersionId = defaultVersion.id;
       const buildVersionSteps = await getBuildVersionSteps(defaultVersion.id);
       steps = buildVersionSteps.map(s => ({ ...s, sequence: s.build_sequence }));
-
-      // Update the order with the default build version for tracking
-      await db.execute({
-        sql: "UPDATE orders SET build_version_id = ? WHERE id = ?",
-        args: [defaultVersion.id, orderId]
-      });
     } else {
       // Fall back to all product steps (legacy behavior)
       const stepsResult = await db.execute({
@@ -399,10 +401,10 @@ export async function generateSchedule(orderId: number): Promise<Schedule | null
 
   const weekStartStr = weekStart.toISOString().split("T")[0]!;
 
-  // Create schedule record
+  // Create schedule record with build version
   const scheduleResult = await db.execute({
-    sql: "INSERT INTO schedules (order_id, week_start_date) VALUES (?, ?)",
-    args: [orderId, weekStartStr]
+    sql: "INSERT INTO schedules (order_id, week_start_date, build_version_id) VALUES (?, ?, ?)",
+    args: [orderId, weekStartStr, buildVersionId]
   });
   const scheduleId = Number(scheduleResult.lastInsertRowid);
 

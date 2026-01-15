@@ -48,12 +48,10 @@ export async function handleOrders(request: Request): Promise<Response | null> {
   // GET /api/orders - list all orders
   if (url.pathname === "/api/orders" && request.method === "GET") {
     const result = await db.execute(`
-      SELECT o.*, p.name as product_name, s.id as schedule_id,
-             bv.version_name as build_version_name
+      SELECT o.*, p.name as product_name, s.id as schedule_id
       FROM orders o
       JOIN products p ON o.product_id = p.id
       LEFT JOIN schedules s ON s.order_id = o.id
-      LEFT JOIN product_build_versions bv ON o.build_version_id = bv.id
       ORDER BY o.due_date
     `);
     const orders = result.rows;
@@ -71,11 +69,9 @@ export async function handleOrders(request: Request): Promise<Response | null> {
     const orderId = parseInt(orderMatch[1]!);
     const result = await db.execute({
       sql: `
-      SELECT o.*, p.name as product_name,
-             bv.version_name as build_version_name
+      SELECT o.*, p.name as product_name
       FROM orders o
       JOIN products p ON o.product_id = p.id
-      LEFT JOIN product_build_versions bv ON o.build_version_id = bv.id
       WHERE o.id = ?
     `,
       args: [orderId]
@@ -102,7 +98,6 @@ async function handleCreateOrder(request: Request): Promise<Response> {
       product_id: number;
       quantity: number;
       due_date: string;
-      build_version_id?: number;
     };
 
     if (!body.product_id || !body.quantity || !body.due_date) {
@@ -122,42 +117,19 @@ async function handleCreateOrder(request: Request): Promise<Response> {
       return Response.json({ error: "Product not found" }, { status: 404 });
     }
 
-    // Verify build version exists and belongs to the product (if specified)
-    let buildVersionId: number | null = null;
-    if (body.build_version_id) {
-      const buildVersionResult = await db.execute({
-        sql: "SELECT id FROM product_build_versions WHERE id = ? AND product_id = ?",
-        args: [body.build_version_id, body.product_id]
-      });
-      if (buildVersionResult.rows.length === 0) {
-        return Response.json({ error: "Build version not found or does not belong to this product" }, { status: 400 });
-      }
-      buildVersionId = body.build_version_id;
-    } else {
-      // Try to use the default build version
-      const defaultResult = await db.execute({
-        sql: "SELECT id FROM product_build_versions WHERE product_id = ? AND is_default = 1",
-        args: [body.product_id]
-      });
-      if (defaultResult.rows.length > 0) {
-        buildVersionId = (defaultResult.rows[0] as { id: number }).id;
-      }
-    }
-
     // Auto-assign a color for visual distinction
     const color = await getNextOrderColor();
 
     const result = await db.execute({
-      sql: "INSERT INTO orders (product_id, quantity, due_date, color, build_version_id) VALUES (?, ?, ?, ?, ?)",
-      args: [body.product_id, body.quantity, body.due_date, color, buildVersionId]
+      sql: "INSERT INTO orders (product_id, quantity, due_date, color) VALUES (?, ?, ?, ?)",
+      args: [body.product_id, body.quantity, body.due_date, color]
     });
 
     const newOrderResult = await db.execute({
       sql: `
-        SELECT o.*, p.name as product_name, bv.version_name as build_version_name
+        SELECT o.*, p.name as product_name
         FROM orders o
         JOIN products p ON o.product_id = p.id
-        LEFT JOIN product_build_versions bv ON o.build_version_id = bv.id
         WHERE o.id = ?
       `,
       args: [result.lastInsertRowid]
@@ -177,7 +149,6 @@ async function handleUpdateOrder(request: Request, orderId: number): Promise<Res
       due_date?: string;
       color?: string | null;
       product_id?: number;
-      build_version_id?: number | null;
     };
 
     const updates: string[] = [];
@@ -222,31 +193,6 @@ async function handleUpdateOrder(request: Request, orderId: number): Promise<Res
       values.push(body.product_id);
     }
 
-    if ('build_version_id' in body) {
-      if (body.build_version_id !== null) {
-        // Get the order's product_id to verify the build version belongs to it
-        const orderResult = await db.execute({
-          sql: "SELECT product_id FROM orders WHERE id = ?",
-          args: [orderId]
-        });
-        const order = orderResult.rows[0] as { product_id: number } | undefined;
-        if (!order) {
-          return Response.json({ error: "Order not found" }, { status: 404 });
-        }
-
-        const productId = body.product_id ?? order.product_id;
-        const buildVersionResult = await db.execute({
-          sql: "SELECT id FROM product_build_versions WHERE id = ? AND product_id = ?",
-          args: [body.build_version_id, productId]
-        });
-        if (buildVersionResult.rows.length === 0) {
-          return Response.json({ error: "Build version not found or does not belong to this product" }, { status: 400 });
-        }
-      }
-      updates.push("build_version_id = ?");
-      values.push(body.build_version_id);
-    }
-
     if (updates.length === 0) {
       return Response.json({ error: "No fields to update" }, { status: 400 });
     }
@@ -257,15 +203,13 @@ async function handleUpdateOrder(request: Request, orderId: number): Promise<Res
       args: values
     });
 
-    // Return updated order with product_name, schedule_id, and build_version_name
+    // Return updated order with product_name and schedule_id
     const orderResult = await db.execute({
       sql: `
-        SELECT o.*, p.name as product_name, s.id as schedule_id,
-               bv.version_name as build_version_name
+        SELECT o.*, p.name as product_name, s.id as schedule_id
         FROM orders o
         JOIN products p ON o.product_id = p.id
         LEFT JOIN schedules s ON s.order_id = o.id
-        LEFT JOIN product_build_versions bv ON o.build_version_id = bv.id
         WHERE o.id = ?
       `,
       args: [orderId]

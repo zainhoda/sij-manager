@@ -11,6 +11,13 @@ import type {
   ParsedWorker,
   ParsedCertification,
   ParsedProductStep,
+  ParsedProducts,
+  ParsedProductVersion,
+  ParsedProductStepWithVersion,
+  ParsedOrders,
+  ParsedOrder,
+  ParsedProductionDataV2,
+  ParsedProductionRowV2,
 } from './import-parsers';
 
 export interface ValidationError {
@@ -459,6 +466,527 @@ export function validateProductionData(
       summary: {
         totalRows: validatedRows.length,
         ordersAffected: parsed.orderIds.size,
+        workersInvolved: uniqueWorkers.size,
+        stepsInvolved: uniqueSteps.size,
+        schedulesToCreate: uniqueOrderDates.size,
+        entriesToCreate: uniqueStepDates.size,
+        assignmentsToCreate: validatedRows.length,
+      },
+    },
+  };
+}
+
+// ============================================================================
+// NEW VALIDATORS FOR V2 IMPORT SYSTEM
+// ============================================================================
+
+// Products CSV validation types
+export interface ProductsValidationResult {
+  valid: boolean;
+  errors: ValidationError[];
+  warnings: ValidationWarning[];
+  preview: {
+    products: {
+      name: string;
+      versions: {
+        versionName: string;
+        versionNumber: number;
+        isDefault: boolean;
+        stepCount: number;
+      }[];
+    }[];
+    components: { name: string; action: 'create' | 'exists' }[];
+    workCategories: string[];
+    summary: {
+      productsToCreate: number;
+      versionsToCreate: number;
+      stepsToCreate: number;
+      componentsToCreate: number;
+      dependenciesToCreate: number;
+      workCategoriesToCreate: number;
+    };
+  };
+}
+
+/**
+ * Detect circular dependencies within a version's steps using DFS
+ */
+function detectCircularDependenciesInVersion(steps: ParsedProductStepWithVersion[]): string[] {
+  const graph = new Map<string, string[]>();
+  const stepCodes = new Set(steps.map(s => s.stepCode));
+
+  // Build adjacency list
+  for (const step of steps) {
+    graph.set(step.stepCode, step.dependencies.map(d => d.stepCode).filter(code => stepCodes.has(code)));
+  }
+
+  const visited = new Set<string>();
+  const recursionStack = new Set<string>();
+  const cycles: string[] = [];
+
+  function dfs(node: string, path: string[]): boolean {
+    visited.add(node);
+    recursionStack.add(node);
+
+    const neighbors = graph.get(node) || [];
+    for (const neighbor of neighbors) {
+      if (!visited.has(neighbor)) {
+        if (dfs(neighbor, [...path, neighbor])) {
+          return true;
+        }
+      } else if (recursionStack.has(neighbor)) {
+        // Found a cycle
+        const cycleStart = path.indexOf(neighbor);
+        const cycle = path.slice(cycleStart).join(' -> ') + ' -> ' + neighbor;
+        cycles.push(cycle);
+        return true;
+      }
+    }
+
+    recursionStack.delete(node);
+    return false;
+  }
+
+  for (const step of steps) {
+    if (!visited.has(step.stepCode)) {
+      dfs(step.stepCode, [step.stepCode]);
+    }
+  }
+
+  return cycles;
+}
+
+/**
+ * Validate Products CSV data
+ */
+export function validateProducts(
+  parsed: ParsedProducts,
+  existing: ExistingData
+): ProductsValidationResult {
+  const errors: ValidationError[] = [];
+  const warnings: ValidationWarning[] = [];
+
+  const productPreviews: {
+    name: string;
+    versions: {
+      versionName: string;
+      versionNumber: number;
+      isDefault: boolean;
+      stepCount: number;
+    }[];
+  }[] = [];
+
+  let totalVersions = 0;
+  let totalSteps = 0;
+  let totalDependencies = 0;
+
+  // Validate each product
+  for (const [productName, versions] of parsed.products) {
+    const versionPreviews: {
+      versionName: string;
+      versionNumber: number;
+      isDefault: boolean;
+      stepCount: number;
+    }[] = [];
+
+    // Check for exactly one default version
+    const defaultVersions = [...versions.values()].filter(v => v.isDefault);
+    if (defaultVersions.length === 0) {
+      errors.push({
+        message: `Product "${productName}" has no default version. Mark one version with is_default=Y`,
+      });
+    } else if (defaultVersions.length > 1) {
+      errors.push({
+        message: `Product "${productName}" has multiple default versions: ${defaultVersions.map(v => v.versionName).join(', ')}`,
+      });
+    }
+
+    // Validate each version
+    for (const [versionNumber, version] of versions) {
+      totalVersions++;
+
+      // Check for duplicate step codes within version
+      const seenStepCodes = new Set<string>();
+      for (const step of version.steps) {
+        if (seenStepCodes.has(step.stepCode)) {
+          errors.push({
+            row: step.rowNumber,
+            field: 'step_code',
+            message: `Duplicate step_code "${step.stepCode}" in ${productName} ${version.versionName}`,
+          });
+        }
+        seenStepCodes.add(step.stepCode);
+
+        // Validate equipment exists
+        if (step.equipmentCode && !existing.equipment.has(step.equipmentCode)) {
+          errors.push({
+            row: step.rowNumber,
+            field: 'equipment_code',
+            message: `Equipment "${step.equipmentCode}" not found. Import Worker-Equipment CSV first.`,
+          });
+        }
+
+        // Validate dependencies exist within this version
+        for (const dep of step.dependencies) {
+          if (!seenStepCodes.has(dep.stepCode) && !version.steps.some(s => s.stepCode === dep.stepCode)) {
+            warnings.push({
+              row: step.rowNumber,
+              field: 'dependencies',
+              message: `Dependency "${dep.stepCode}" not found in ${productName} ${version.versionName}`,
+            });
+          }
+        }
+
+        // Warn if no component
+        if (!step.componentName) {
+          warnings.push({
+            row: step.rowNumber,
+            field: 'component',
+            message: `Missing component name for step ${step.stepCode}`,
+          });
+        }
+
+        totalSteps++;
+        totalDependencies += step.dependencies.length;
+      }
+
+      // Check for circular dependencies
+      const cycles = detectCircularDependenciesInVersion(version.steps);
+      for (const cycle of cycles) {
+        errors.push({
+          message: `Circular dependency in ${productName} ${version.versionName}: ${cycle}`,
+        });
+      }
+
+      versionPreviews.push({
+        versionName: version.versionName,
+        versionNumber,
+        isDefault: version.isDefault,
+        stepCount: version.steps.length,
+      });
+    }
+
+    productPreviews.push({
+      name: productName,
+      versions: versionPreviews,
+    });
+  }
+
+  // Check components
+  const componentsWithAction: { name: string; action: 'create' | 'exists' }[] = [];
+  for (const compName of parsed.components) {
+    const exists = existing.components.has(compName);
+    componentsWithAction.push({ name: compName, action: exists ? 'exists' : 'create' });
+  }
+
+  // Calculate work categories to create
+  const workCategoriesToCreate = [...parsed.workCategories].filter(
+    cat => !existing.workCategories.has(cat)
+  );
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    preview: {
+      products: productPreviews,
+      components: componentsWithAction,
+      workCategories: [...parsed.workCategories],
+      summary: {
+        productsToCreate: parsed.products.size,
+        versionsToCreate: totalVersions,
+        stepsToCreate: totalSteps,
+        componentsToCreate: componentsWithAction.filter(c => c.action === 'create').length,
+        dependenciesToCreate: totalDependencies,
+        workCategoriesToCreate: workCategoriesToCreate.length,
+      },
+    },
+  };
+}
+
+// Orders CSV validation types
+export interface OrdersExistingData extends ExistingData {
+  products: Map<string, { id: number; name: string }>;  // name -> product info
+}
+
+export interface OrdersValidationResult {
+  valid: boolean;
+  errors: ValidationError[];
+  warnings: ValidationWarning[];
+  preview: {
+    orders: (ParsedOrder & {
+      productId: number;
+    })[];
+    summary: {
+      ordersToCreate: number;
+      productsReferenced: number;
+    };
+  };
+}
+
+/**
+ * Validate Orders CSV data
+ * Note: Orders no longer include version - version is determined at scheduling time
+ */
+export function validateOrders(
+  parsed: ParsedOrders,
+  existing: OrdersExistingData
+): OrdersValidationResult {
+  const errors: ValidationError[] = [];
+  const warnings: ValidationWarning[] = [];
+
+  const validatedOrders: (ParsedOrder & {
+    productId: number;
+  })[] = [];
+
+  // Track duplicate orders (same product + due_date)
+  const orderKeys = new Set<string>();
+
+  for (const order of parsed.orders) {
+    // Validate product exists
+    const product = existing.products.get(order.productName);
+    if (!product) {
+      errors.push({
+        row: order.rowNumber,
+        field: 'product_name',
+        message: `Product "${order.productName}" not found. Import Products CSV first.`,
+      });
+      continue;
+    }
+
+    // Check for duplicate order (same product + due_date)
+    const orderKey = `${order.productName}:${order.dueDate}`;
+    if (orderKeys.has(orderKey)) {
+      errors.push({
+        row: order.rowNumber,
+        message: `Duplicate order: ${order.productName} with due date ${order.dueDate} already exists in this import`,
+      });
+      continue;
+    }
+    orderKeys.add(orderKey);
+
+    // Warn about past due dates
+    const dueDate = new Date(order.dueDate);
+    if (dueDate < new Date()) {
+      warnings.push({
+        row: order.rowNumber,
+        field: 'due_date',
+        message: `Due date ${order.dueDate} is in the past`,
+      });
+    }
+
+    // Warn about very large quantities
+    if (order.quantity > 10000) {
+      warnings.push({
+        row: order.rowNumber,
+        field: 'quantity',
+        message: `Large quantity: ${order.quantity}`,
+      });
+    }
+
+    validatedOrders.push({
+      ...order,
+      productId: product.id,
+    });
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    preview: {
+      orders: validatedOrders,
+      summary: {
+        ordersToCreate: validatedOrders.length,
+        productsReferenced: parsed.productNames.size,
+      },
+    },
+  };
+}
+
+// Production History V2 validation types
+export interface ProductionDataV2ExistingData extends ExistingData {
+  // orderKey (productName:dueDate) -> order info (no longer includes buildVersionId)
+  ordersByKey: Map<string, { id: number; productId: number; productName: string }>;
+  // productId -> versionName -> build version info
+  productVersions: Map<number, Map<string, { id: number; versionName: string }>>;
+  // buildVersionId -> stepCode -> step info
+  versionSteps: Map<number, Map<string, { id: number; name: string; timePerPieceSeconds: number }>>;
+  existingAssignments: Set<string>; // "workerId:stepId:date" keys
+}
+
+export interface ProductionDataV2ValidationResult {
+  valid: boolean;
+  errors: ValidationError[];
+  warnings: ValidationWarning[];
+  preview: {
+    rows: (ParsedProductionRowV2 & {
+      orderId: number;
+      workerId: number;
+      productStepId: number;
+      buildVersionId: number;  // Version used for this production record
+      expectedTimeSeconds: number;  // For proficiency calculation
+    })[];
+    summary: {
+      totalRows: number;
+      ordersAffected: number;
+      workersInvolved: number;
+      stepsInvolved: number;
+      schedulesToCreate: number;
+      entriesToCreate: number;
+      assignmentsToCreate: number;
+    };
+  };
+}
+
+/**
+ * Validate Production History V2 data (uses product_name + due_date + version_name)
+ * Note: version_name is now required and explicitly provided in the CSV
+ */
+export function validateProductionDataV2(
+  parsed: ParsedProductionDataV2,
+  existing: ProductionDataV2ExistingData
+): ProductionDataV2ValidationResult {
+  const errors: ValidationError[] = [];
+  const warnings: ValidationWarning[] = [];
+
+  const validatedRows: (ParsedProductionRowV2 & {
+    orderId: number;
+    workerId: number;
+    productStepId: number;
+    buildVersionId: number;
+    expectedTimeSeconds: number;
+  })[] = [];
+
+  // Track unique combinations for summary
+  const uniqueOrderDates = new Set<string>(); // For schedule count estimation
+  const uniqueStepDates = new Set<string>(); // For entry count estimation
+  const uniqueWorkers = new Set<number>();
+  const uniqueSteps = new Set<number>();
+  const uniqueOrders = new Set<number>();
+
+  // Check each row
+  for (const row of parsed.rows) {
+    // Build order key
+    const orderKey = `${row.productName}:${row.dueDate}`;
+
+    // Validate order exists
+    const order = existing.ordersByKey.get(orderKey);
+    if (!order) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'product_name/due_date',
+        message: `Order not found: "${row.productName}" with due date ${row.dueDate}. Import Orders CSV first.`,
+      });
+      continue;
+    }
+
+    // Validate version_name exists for this product
+    const productVersions = existing.productVersions.get(order.productId);
+    if (!productVersions) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'version_name',
+        message: `Product "${row.productName}" has no build versions`,
+      });
+      continue;
+    }
+
+    const version = productVersions.get(row.versionName);
+    if (!version) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'version_name',
+        message: `Version "${row.versionName}" not found for product "${row.productName}"`,
+      });
+      continue;
+    }
+
+    // Validate step_code exists for this version
+    const versionSteps = existing.versionSteps.get(version.id);
+    if (!versionSteps) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'step_code',
+        message: `No steps found for version "${row.versionName}"`,
+      });
+      continue;
+    }
+
+    const step = versionSteps.get(row.stepCode);
+    if (!step) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'step_code',
+        message: `Step code "${row.stepCode}" not found in version "${row.versionName}" of product "${row.productName}"`,
+      });
+      continue;
+    }
+
+    // Validate worker exists (exact match)
+    const workerId = existing.workers.get(row.workerName);
+    if (!workerId) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'worker_name',
+        message: `Worker "${row.workerName}" not found. Import Worker-Equipment CSV first.`,
+      });
+      continue;
+    }
+
+    // Check for duplicates - same worker + step + date + time
+    const dupKey = `${workerId}:${step.id}:${row.workDate}:${row.startTime}`;
+    if (existing.existingAssignments.has(dupKey)) {
+      errors.push({
+        row: row.rowNumber,
+        message: `Duplicate: Worker "${row.workerName}" already has an assignment for step "${row.stepCode}" on ${row.workDate} at ${row.startTime}`,
+      });
+      continue;
+    }
+
+    // Warn if work date is after order due date
+    if (row.workDate > row.dueDate) {
+      warnings.push({
+        row: row.rowNumber,
+        message: `Work date ${row.workDate} is after order due date ${row.dueDate}`,
+      });
+    }
+
+    // Calculate week start for schedule grouping
+    const date = new Date(row.workDate);
+    const dayOfWeek = date.getDay();
+    const weekStart = new Date(date);
+    weekStart.setDate(date.getDate() - dayOfWeek);
+    const weekStartStr = weekStart.toISOString().split('T')[0];
+
+    uniqueOrderDates.add(`${order.id}:${weekStartStr}`);
+    uniqueStepDates.add(`${order.id}:${step.id}:${row.workDate}`);
+    uniqueWorkers.add(workerId);
+    uniqueSteps.add(step.id);
+    uniqueOrders.add(order.id);
+
+    // Calculate expected time for proficiency calculation
+    const expectedTimeSeconds = step.timePerPieceSeconds * row.units;
+
+    validatedRows.push({
+      ...row,
+      orderId: order.id,
+      workerId,
+      productStepId: step.id,
+      buildVersionId: version.id,
+      expectedTimeSeconds,
+    });
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    preview: {
+      rows: validatedRows,
+      summary: {
+        totalRows: validatedRows.length,
+        ordersAffected: uniqueOrders.size,
         workersInvolved: uniqueWorkers.size,
         stepsInvolved: uniqueSteps.size,
         schedulesToCreate: uniqueOrderDates.size,

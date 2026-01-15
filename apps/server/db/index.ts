@@ -62,10 +62,9 @@ async function migrateWorkerAssignments() {
 async function initialize() {
   await ensureSchema(db);
 
-  // Only seed on test database or local file
+  // Only seed on test database
   const dbUrl = process.env.TURSO_DATABASE_URL || "";
-  const isTestDb = dbUrl.includes("sij-test") || dbUrl.startsWith("file:");
-  if (isTestDb) {
+  if (dbUrl.includes("test")) {
     await seedDatabase(db);
   }
 

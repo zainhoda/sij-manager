@@ -1,0 +1,63 @@
+product_name,version_name,version_number,is_default,step_code,external_id,category,component,task_name,time_seconds,equipment_code,dependencies
+Tenjam Blue,v1.0,1,Y,CFA1,1,Cutting Dept.,Fabric,Cut Fabric,90,CA,
+Tenjam Blue,v1.0,1,Y,CTA1,2,Cutting Dept.,Trim, Cut Velcro,2,CMIS,
+Tenjam Blue,v1.0,1,Y,PSA1,3,Prep Work,Fabric, Sew flag on panel,7,STS,CFA1:finish
+Tenjam Blue,v1.0,1,Y,SA1,4,Sewing Dept.,A1. Small Velcro Pocket , Hem short edge,20,STS,"CFA1:finish,CTA1:finish"
+Tenjam Blue,v1.0,1,Y,SA2,5,Sewing Dept.,A2. Small Velcro Pocket , Sew hook velcro,25,STS,SA1:finish
+Tenjam Blue,v1.0,1,Y,SB1,6,Sewing Dept.,B1. Connector Strap , Sew the panel together along the long sides,12,STS,"CFA1:finish,CTA1:finish"
+Tenjam Blue,v1.0,1,Y,SB2,7,Sewing Dept.,B2. Connector Strap , Turn inside out,60,FCL,SB1:start
+Tenjam Blue,v1.0,1,Y,SB3,8,Sewing Dept.,B3. Connector Strap , Sew the 2 long sides of the connector Strap  panel,25,STS,SB2:finish
+Tenjam Blue,v1.0,1,Y,SB4,9,Sewing Dept.,B4. Connector Strap ,"Sew the connector strap to the small Velcro pocket, add the loop Velcro.",35,STS,"SA2:finish,SB3:finish"
+Tenjam Blue,v1.0,1,Y,SB5,10,Sewing Dept.,B5. Connector Strap , Close the sides of the small Velcro pocket.,15,STS,SB4:finish
+Tenjam Blue,v1.0,1,Y,SB6,11,Sewing Dept.,B6. Connector Strap ," Cut threads, Turn right side out, Cut corners",25,FCL,SB5:start
+Tenjam Blue,v1.0,1,Y,SC1,12,Sewing Dept.,C1. Hanging Big Pocket ,  Hem one short side,17,STS,"CFA1:finish,CTA1:finish"
+Tenjam Blue,v1.0,1,Y,SC2,13,Sewing Dept.,C2. Hanging Big Pocket ," Fold to the marking, and close both sides",35,STS,SC1:finish
+Tenjam Blue,v1.0,1,Y,SC3,14,Sewing Dept.,C3. Hanging Big Pocket , Add stitching to the lower corners to create volume,36,STS,SC2:finish
+Tenjam Blue,v1.0,1,Y,SC4,15,Sewing Dept.,C4. Hanging Big Pocket , Turn right side out,25,FCL,SC3:start
+Tenjam Blue,v1.0,1,Y,SC5,16,Sewing Dept.,C5. Hanging Big Pocket , Add straight single-stitching to the top of the pocket,15,STS,SC4:finish
+Tenjam Blue,v1.0,1,Y,SC6,17,Sewing Dept.,C6. Hanging Big Pocket , Sew the center stitch,20,STS,SC5:finish
+Tenjam Blue,v1.0,1,Y,SC7,18,Sewing Dept.,C7. Bartack , Add the bartack to the top of the hanging big pocket,14,SBT,SC6:finish
+Tenjam Blue,v1.0,1,Y,SC8,19,Sewing Dept.,C8. Hanging Big Pocket , Stitch the connector strap to the large pocket,9,STS,SC7:finish
+Tenjam Blue,v1.0,1,Y,SD1,20,Sewing Dept.,D1. Cushion Cover ,Sew the zipper onto the left panel with USA flag.,100,STS,"CFA1:finish,CTA1:finish,PSA1:finish"
+Tenjam Blue,v1.0,1,Y,SD2,21,Sewing Dept.,D2. Cushion Cover , Sew the zipper with hemming foot onto the right panel without the flag,30,STSZF,"CFA1:finish,CTA1:finish"
+Tenjam Blue,v1.0,1,Y,SD3,22,Sewing Dept.,D3. Cushion Cover , Cut extra material off add the zipper pull,18,FCL,"SD1:start,SD2:start"
+Tenjam Blue,v1.0,1,Y,SD4,23,Sewing Dept.,D4. Cushion Cover , Add stitch to both zipper ends,60,STS,SD3:finish
+Tenjam Blue,v1.0,1,Y,SD5,24,Sewing Dept.,D5. Cushion Cover ,  Sew the long sides closed,30,STS,SD4:finish
+Tenjam Blue,v1.0,1,Y,SD6,25,Sewing Dept.,D6.Cushion Cover , Sew front panel with pockets to zipper panel,30,STS,SD5:finish
+Tenjam Blue,v1.0,1,Y,SD7,26,Sewing Dept.,D7. Cushion Cover , Sew on the side panels,30,STS,SD6:finish
+Tenjam Blue,v1.0,1,Y,SD8,27,Sewing Dept.,D8. Cushion Cover , Turn right side out,30,FCL,SD7:finish
+Tenjam Blue,v1.0,1,Y,IFA,28,Inspection,A. Inspection Quality ," Clean and inspect for any loose threads, missing, flag, ect.",30,FCL,SD7:finish
+Tenjam Blue,v1.0,1,Y,IFB,29,Inspection,B. Inspection Insert Foam , Insert foam piece into the headrest.,50,FCL,IFA:finish
+Tenjam Blue,v1.0,1,Y,IFC,30,Inspection,C. Inspection Bag , Individually bagged into poly bag S-1997 Size: 9 x 24,30,FCL,IFB:finish
+Tenjam Blue,v1.0,1,Y,IFD,31,Inspection,D. Inspection Pack , Pack into cartons ,60,PAC,IFC:finish
+Tenjam White,v1.0,1,Y,CFA1,1,Cutting Dept.,Fabric,Cut Fabric,90,CA,
+Tenjam White,v1.0,1,Y,CTA1,2,Cutting Dept.,Trim, Cut Velcro,2,CMIS,
+Tenjam White,v1.0,1,Y,PSA1,3,Prep Work,Fabric, Sew flag on panel,7,STS,CFA1:finish
+Tenjam White,v1.0,1,Y,SA1,4,Sewing Dept.,A1. Small Velcro Pocket , Hem short edge,20,STS,"CFA1:finish,CTA1:finish"
+Tenjam White,v1.0,1,Y,SA2,5,Sewing Dept.,A2. Small Velcro Pocket , Sew hook velcro,25,STS,SA1:finish
+Tenjam White,v1.0,1,Y,SB1,6,Sewing Dept.,B1. Connector Strap , Sew the panel together along the long sides,12,STS,"CFA1:finish,CTA1:finish"
+Tenjam White,v1.0,1,Y,SB2,7,Sewing Dept.,B2. Connector Strap , Turn inside out,60,FCL,SB1:start
+Tenjam White,v1.0,1,Y,SB3,8,Sewing Dept.,B3. Connector Strap , Sew the 2 long sides of the connector Strap  panel,25,STS,SB2:finish
+Tenjam White,v1.0,1,Y,SB4,9,Sewing Dept.,B4. Connector Strap ,"Sew the connector strap to the small Velcro pocket, add the loop Velcro.",35,STS,"SA2:finish,SB3:finish"
+Tenjam White,v1.0,1,Y,SB5,10,Sewing Dept.,B5. Connector Strap , Close the sides of the small Velcro pocket.,15,STS,SB4:finish
+Tenjam White,v1.0,1,Y,SB6,11,Sewing Dept.,B6. Connector Strap ," Cut threads, Turn right side out, Cut corners",25,FCL,SB5:start
+Tenjam White,v1.0,1,Y,SC1,12,Sewing Dept.,C1. Hanging Big Pocket ,  Hem one short side,17,STS,"CFA1:finish,CTA1:finish"
+Tenjam White,v1.0,1,Y,SC2,13,Sewing Dept.,C2. Hanging Big Pocket ," Fold to the marking, and close both sides",35,STS,SC1:finish
+Tenjam White,v1.0,1,Y,SC3,14,Sewing Dept.,C3. Hanging Big Pocket , Add stitching to the lower corners to create volume,36,STS,SC2:finish
+Tenjam White,v1.0,1,Y,SC4,15,Sewing Dept.,C4. Hanging Big Pocket , Turn right side out,25,FCL,SC3:start
+Tenjam White,v1.0,1,Y,SC5,16,Sewing Dept.,C5. Hanging Big Pocket , Add straight single-stitching to the top of the pocket,15,STS,SC4:finish
+Tenjam White,v1.0,1,Y,SC6,17,Sewing Dept.,C6. Hanging Big Pocket , Sew the center stitch,20,STS,SC5:finish
+Tenjam White,v1.0,1,Y,SC7,18,Sewing Dept.,C7. Bartack , Add the bartack to the top of the hanging big pocket,14,SBT,SC6:finish
+Tenjam White,v1.0,1,Y,SC8,19,Sewing Dept.,C8. Hanging Big Pocket , Stitch the connector strap to the large pocket,9,STS,SC7:finish
+Tenjam White,v1.0,1,Y,SD1,20,Sewing Dept.,D1. Cushion Cover ,Sew the zipper onto the left panel with USA flag.,100,STS,"CFA1:finish,CTA1:finish,PSA1:finish"
+Tenjam White,v1.0,1,Y,SD2,21,Sewing Dept.,D2. Cushion Cover , Sew the zipper with hemming foot onto the right panel without the flag,30,STSZF,"CFA1:finish,CTA1:finish"
+Tenjam White,v1.0,1,Y,SD3,22,Sewing Dept.,D3. Cushion Cover , Cut extra material off add the zipper pull,18,FCL,"SD1:start,SD2:start"
+Tenjam White,v1.0,1,Y,SD4,23,Sewing Dept.,D4. Cushion Cover , Add stitch to both zipper ends,60,STS,SD3:finish
+Tenjam White,v1.0,1,Y,SD5,24,Sewing Dept.,D5. Cushion Cover ,  Sew the long sides closed,30,STS,SD4:finish
+Tenjam White,v1.0,1,Y,SD6,25,Sewing Dept.,D6.Cushion Cover , Sew front panel with pockets to zipper panel,30,STS,SD5:finish
+Tenjam White,v1.0,1,Y,SD7,26,Sewing Dept.,D7. Cushion Cover , Sew on the side panels,30,STS,SD6:finish
+Tenjam White,v1.0,1,Y,SD8,27,Sewing Dept.,D8. Cushion Cover , Turn right side out,30,FCL,SD7:finish
+Tenjam White,v1.0,1,Y,IFA,28,Inspection,A. Inspection Quality ," Clean and inspect for any loose threads, missing, flag, ect.",30,FCL,SD7:finish
+Tenjam White,v1.0,1,Y,IFB,29,Inspection,B. Inspection Insert Foam , Insert foam piece into the headrest.,50,FCL,IFA:finish
+Tenjam White,v1.0,1,Y,IFC,30,Inspection,C. Inspection Bag , Individually bagged into poly bag S-1997 Size: 9 x 24,30,FCL,IFB:finish
+Tenjam White,v1.0,1,Y,IFD,31,Inspection,D. Inspection Pack , Pack into cartons ,60,PAC,IFC:finish

@@ -1,0 +1,7 @@
+equipment_code,work_category,work_type,station_count,hourly_cost,Maria Garcia,John Smith,Ana Rodriguez,Carlos Martinez
+_COST,,Worker Cost Per Hour,0,0,25.50,22.00,24.00,23.50
+STS,Sewing,Single Needle,3,5.00,Y,Y,Y,
+SDN,Sewing,Double Needle,2,8.00,Y,,Y,
+CTL,Cutting,Team Lead,100,0,Y,Y,,Y
+CMA,Cutting,Manual,2,3.00,,Y,Y,Y
+INS,Inspection,QC,100,0,Y,Y,Y,Y

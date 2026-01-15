@@ -89,7 +89,7 @@ export async function ensureSchema(db: Client) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       product_id INTEGER NOT NULL,
       name TEXT NOT NULL,
-      category TEXT CHECK (category IN ('CUTTING', 'SILKSCREEN', 'PREP', 'SEWING', 'INSPECTION')),
+      category TEXT,
       work_category_id INTEGER,
       time_per_piece_seconds INTEGER NOT NULL,
       sequence INTEGER NOT NULL,
@@ -272,6 +272,7 @@ export async function ensureSchema(db: Client) {
   `);
 
   // Task worker assignments (multi-worker per task with per-worker time tracking)
+  // Note: UNIQUE constraint removed to allow multiple work sessions per worker per entry
   await db.execute(`
     CREATE TABLE IF NOT EXISTS task_worker_assignments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -284,8 +285,7 @@ export async function ensureSchema(db: Client) {
       notes TEXT,
       assigned_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (schedule_entry_id) REFERENCES schedule_entries(id) ON DELETE CASCADE,
-      FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE,
-      UNIQUE (schedule_entry_id, worker_id)
+      FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE
     )
   `);
 
@@ -341,6 +341,8 @@ export async function ensureSchema(db: Client) {
     "ALTER TABLE equipment ADD COLUMN hourly_cost REAL DEFAULT 0",
     // Build version migrations
     "ALTER TABLE orders ADD COLUMN build_version_id INTEGER REFERENCES product_build_versions(id)",
+    // Schedules table migration - version is now tracked per-schedule, not per-order
+    "ALTER TABLE schedules ADD COLUMN build_version_id INTEGER REFERENCES product_build_versions(id)",
   ];
 
   for (const migration of migrations) {
@@ -356,7 +358,8 @@ export async function ensureSchema(db: Client) {
   await db.execute("CREATE INDEX IF NOT EXISTS idx_workers_work_category ON workers(work_category_id)");
   await db.execute("CREATE INDEX IF NOT EXISTS idx_product_steps_work_category ON product_steps(work_category_id)");
   await db.execute("CREATE INDEX IF NOT EXISTS idx_product_steps_component ON product_steps(component_id)");
-  await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_product_steps_code_product ON product_steps(product_id, step_code)");
+  // Note: step_code uniqueness is per-version now, not per-product (enforced via build_version_steps)
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_product_steps_code ON product_steps(step_code)");
 
   // Indexes for build version tables
   await db.execute("CREATE INDEX IF NOT EXISTS idx_build_versions_product ON product_build_versions(product_id)");
@@ -364,6 +367,7 @@ export async function ensureSchema(db: Client) {
   await db.execute("CREATE INDEX IF NOT EXISTS idx_build_version_steps_version ON build_version_steps(build_version_id)");
   await db.execute("CREATE INDEX IF NOT EXISTS idx_build_version_steps_step ON build_version_steps(product_step_id)");
   await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_build_version ON orders(build_version_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_schedules_build_version ON schedules(build_version_id)");
 
   // Backfill: Create default build versions for products that don't have one
   // This ensures existing products get a v1.0 build version with all their steps
@@ -405,6 +409,16 @@ async function backfillDefaultBuildVersions(db: Client) {
     SET build_version_id = (
       SELECT bv.id FROM product_build_versions bv
       WHERE bv.product_id = orders.product_id AND bv.is_default = 1
+    )
+    WHERE build_version_id IS NULL
+  `);
+
+  // Backfill schedules that don't have a build version (copy from orders)
+  await db.execute(`
+    UPDATE schedules
+    SET build_version_id = (
+      SELECT o.build_version_id FROM orders o
+      WHERE o.id = schedules.order_id
     )
     WHERE build_version_id IS NULL
   `);
@@ -461,7 +475,8 @@ export interface Order {
   due_date: string;
   status: 'pending' | 'scheduled' | 'in_progress' | 'completed';
   color: string | null;
-  build_version_id: number | null;
+  // Note: build_version_id column exists in DB for backwards compatibility
+  // but version is now determined at scheduling time and stored on schedules
   created_at: string;
 }
 
@@ -469,6 +484,7 @@ export interface Schedule {
   id: number;
   order_id: number;
   week_start_date: string;
+  build_version_id: number | null;
   created_at: string;
 }
 

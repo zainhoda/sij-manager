@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import type { Column } from "../components/DataGrid";
 import DataGrid from "../components/DataGrid";
 
-type ViewMode = "overall" | "product" | "order";
+type ViewMode = "overall" | "day" | "worker" | "product" | "order";
 
 interface DailyBreakdown {
   id: string;
@@ -16,6 +16,41 @@ interface DailyBreakdown {
   cost: number;
   plannedUnits: number;
   efficiency: number;
+}
+
+interface DaySummary {
+  id: string;
+  date: string;
+  units: number;
+  tasks: number;
+  workerCount: number;
+  hours: number;
+  laborCost: number;
+  equipmentCost: number;
+  totalCost: number;
+  plannedUnits: number;
+  efficiency: number;
+}
+
+interface DayResponse {
+  period: { start: string | null; end: string | null };
+  days: Omit<DaySummary, "id">[];
+}
+
+interface WorkerSummary {
+  id: number;
+  workerId: number;
+  workerName: string;
+  totalUnits: number;
+  tasksCompleted: number;
+  totalHours: number;
+  laborCost: number;
+  avgEfficiency: number;
+}
+
+interface WorkerResponse {
+  period: { start: string | null; end: string | null };
+  workers: Omit<WorkerSummary, "id">[];
 }
 
 interface OverallSummary {
@@ -59,10 +94,13 @@ interface OrderSummary {
   orderId: number;
   productName: string;
   orderQuantity: number;
-  unitsProduced: number;
+  unitsComplete: number;
+  unitsInProgress: number;
+  unitsNotStarted: number;
   progressPercent: number;
   tasksCompleted: number;
   totalHours: number;
+  estimatedHoursRemaining: number;
   laborCost: number;
   equipmentCost: number;
   totalCost: number;
@@ -77,7 +115,7 @@ function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString();
 }
 
-function getDateRange(preset: string): { start: string; end: string } {
+function getDateRange(preset: string): { start: string; end: string } | null {
   const today = new Date();
   const todayStr = today.toISOString().split("T")[0]!;
 
@@ -94,6 +132,8 @@ function getDateRange(preset: string): { start: string; end: string } {
       monthAgo.setDate(monthAgo.getDate() - 30);
       return { start: monthAgo.toISOString().split("T")[0]!, end: todayStr };
     }
+    case "all":
+      return null; // No date filter
     default:
       return { start: todayStr, end: todayStr };
   }
@@ -101,27 +141,23 @@ function getDateRange(preset: string): { start: string; end: string } {
 
 export default function ProductionSummary() {
   const [viewMode, setViewMode] = useState<ViewMode>("overall");
-  const [startDate, setStartDate] = useState(() => {
-    const today = new Date();
-    today.setDate(today.getDate() - 7);
-    return today.toISOString().split("T")[0]!;
-  });
-  const [endDate, setEndDate] = useState(() => new Date().toISOString().split("T")[0]!);
-  const [activePreset, setActivePreset] = useState<string | null>("week");
+  const [startDate, setStartDate] = useState<string | null>(null);
+  const [endDate, setEndDate] = useState<string | null>(null);
+  const [activePreset, setActivePreset] = useState<string | null>("all");
 
   const [loading, setLoading] = useState(true);
   const [overallData, setOverallData] = useState<OverallResponse | null>(null);
+  const [dayData, setDayData] = useState<DayResponse | null>(null);
+  const [workerData, setWorkerData] = useState<WorkerResponse | null>(null);
   const [productData, setProductData] = useState<ProductResponse | null>(null);
   const [orderData, setOrderData] = useState<OrderResponse | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({
-        start_date: startDate,
-        end_date: endDate,
-        group_by: viewMode,
-      });
+      const params = new URLSearchParams({ group_by: viewMode });
+      if (startDate) params.set("start_date", startDate);
+      if (endDate) params.set("end_date", endDate);
 
       const response = await fetch(`/api/production-summary?${params}`);
       const data = await response.json();
@@ -129,6 +165,12 @@ export default function ProductionSummary() {
       switch (viewMode) {
         case "overall":
           setOverallData(data as OverallResponse);
+          break;
+        case "day":
+          setDayData(data as DayResponse);
+          break;
+        case "worker":
+          setWorkerData(data as WorkerResponse);
           break;
         case "product":
           setProductData(data as ProductResponse);
@@ -150,8 +192,8 @@ export default function ProductionSummary() {
 
   const handlePresetClick = (preset: string) => {
     const range = getDateRange(preset);
-    setStartDate(range.start);
-    setEndDate(range.end);
+    setStartDate(range?.start ?? null);
+    setEndDate(range?.end ?? null);
     setActivePreset(preset);
   };
 
@@ -174,7 +216,7 @@ export default function ProductionSummary() {
     },
     {
       key: "units",
-      header: "Units",
+      header: "Steps",
       width: 80,
       editable: false,
     },
@@ -237,6 +279,119 @@ export default function ProductionSummary() {
     },
   ];
 
+  const dayColumns: Column<DaySummary>[] = [
+    {
+      key: "date",
+      header: "Date",
+      width: 110,
+      editable: false,
+      render: (value) => formatDate(String(value)),
+    },
+    {
+      key: "units",
+      header: "Steps",
+      width: 80,
+      editable: false,
+    },
+    {
+      key: "tasks",
+      header: "Tasks",
+      width: 70,
+      editable: false,
+    },
+    {
+      key: "workerCount",
+      header: "Workers",
+      width: 80,
+      editable: false,
+    },
+    {
+      key: "hours",
+      header: "Hours",
+      width: 80,
+      editable: false,
+      render: (value) => `${Number(value).toFixed(1)}h`,
+    },
+    {
+      key: "laborCost",
+      header: "Labor $",
+      width: 90,
+      editable: false,
+      render: (value) => `$${Number(value).toFixed(2)}`,
+    },
+    {
+      key: "equipmentCost",
+      header: "Equip $",
+      width: 90,
+      editable: false,
+      render: (value) => `$${Number(value).toFixed(2)}`,
+    },
+    {
+      key: "totalCost",
+      header: "Total $",
+      width: 90,
+      editable: false,
+      render: (value) => `$${Number(value).toFixed(2)}`,
+    },
+    {
+      key: "efficiency",
+      header: "Efficiency",
+      width: 90,
+      editable: false,
+      render: (value) => {
+        const eff = Number(value);
+        const color = eff >= 100 ? "#22c55e" : eff >= 80 ? "#f59e0b" : "#dc2626";
+        return <span style={{ color }}>{eff}%</span>;
+      },
+    },
+  ];
+
+  const workerColumns: Column<WorkerSummary>[] = [
+    {
+      key: "workerName",
+      header: "Worker",
+      width: 160,
+      editable: false,
+    },
+    {
+      key: "totalUnits",
+      header: "Steps",
+      width: 80,
+      editable: false,
+    },
+    {
+      key: "tasksCompleted",
+      header: "Tasks",
+      width: 70,
+      editable: false,
+    },
+    {
+      key: "totalHours",
+      header: "Hours",
+      width: 80,
+      editable: false,
+      render: (value) => `${Number(value).toFixed(1)}h`,
+    },
+    {
+      key: "laborCost",
+      header: "Labor $",
+      width: 100,
+      editable: false,
+      render: (value) => `$${Number(value).toFixed(2)}`,
+    },
+    {
+      key: "avgEfficiency",
+      header: "Avg Efficiency",
+      width: 110,
+      editable: false,
+      render: (value) => {
+        const eff = Number(value);
+        const color = eff >= 100 ? "#22c55e" : eff >= 80 ? "#f59e0b" : "#dc2626";
+        return <span style={{ color }}>{eff}%</span>;
+      },
+    },
+  ];
+
   const productColumns: Column<ProductSummary>[] = [
     {
       key: "productName",
@@ -246,7 +401,7 @@ export default function ProductionSummary() {
     },
     {
       key: "totalUnits",
-      header: "Units",
+      header: "Steps",
       width: 80,
       editable: false,
     },
@@ -308,61 +463,63 @@ export default function ProductionSummary() {
     {
       key: "productName",
       header: "Product",
-      width: 160,
+      width: 140,
       editable: false,
     },
     {
-      key: "unitsProduced",
-      header: "Produced",
-      width: 90,
+      key: "unitsComplete",
+      header: "Completion",
+      width: 180,
       editable: false,
-      render: (value, row) => `${value} / ${row.orderQuantity}`,
+      render: (_, row) => {
+        const total = row.orderQuantity;
+        const completePercent = total > 0 ? (row.unitsComplete / total) * 100 : 0;
+        const inProgressPercent = total > 0 ? (row.unitsInProgress / total) * 100 : 0;
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ height: 8, backgroundColor: "#e2e8f0", borderRadius: 4, overflow: "hidden", display: "flex" }}>
+              <div style={{ width: `${completePercent}%`, height: "100%", backgroundColor: "#22c55e" }} />
+              <div style={{ width: `${inProgressPercent}%`, height: "100%", backgroundColor: "#f59e0b" }} />
+            </div>
+            <div style={{ fontSize: 11, display: "flex", gap: 8 }}>
+              <span style={{ color: "#22c55e" }}>{row.unitsComplete} done</span>
+              <span style={{ color: "#f59e0b" }}>{row.unitsInProgress} wip</span>
+              <span style={{ color: "#94a3b8" }}>{row.unitsNotStarted} todo</span>
+            </div>
+          </div>
+        );
+      },
     },
     {
       key: "progressPercent",
       header: "Progress",
       width: 120,
       editable: false,
-      render: (value) => (
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div
-            style={{
-              flex: 1,
-              height: 8,
-              backgroundColor: "#e2e8f0",
-              borderRadius: 4,
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                width: `${Math.min(Number(value), 100)}%`,
-                height: "100%",
-                backgroundColor: Number(value) >= 100 ? "#22c55e" : "#3b82f6",
-              }}
-            />
+      render: (value, row) => {
+        const percent = Math.min(Number(value), 100);
+        const isOver = Number(value) > 100;
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ height: 8, backgroundColor: "#e2e8f0", borderRadius: 4, overflow: "hidden" }}>
+              <div
+                style={{
+                  width: `${percent}%`,
+                  height: "100%",
+                  backgroundColor: isOver ? "#dc2626" : "#3b82f6",
+                }}
+              />
+            </div>
+            <div style={{ fontSize: 11, color: isOver ? "#dc2626" : "#64748b" }}>
+              {row.totalHours.toFixed(1)}h / {(row.totalHours + row.estimatedHoursRemaining).toFixed(1)}h ({value}%)
+            </div>
           </div>
-          <span style={{ fontSize: 12, minWidth: 35 }}>{value}%</span>
-        </div>
-      ),
-    },
-    {
-      key: "tasksCompleted",
-      header: "Tasks",
-      width: 70,
-      editable: false,
-    },
-    {
-      key: "totalHours",
-      header: "Hours",
-      width: 80,
-      editable: false,
-      render: (value) => `${Number(value).toFixed(1)}h`,
+        );
+      },
     },
     {
       key: "totalCost",
       header: "Cost",
-      width: 90,
+      width: 80,
       editable: false,
       render: (value) => `$${Number(value).toFixed(2)}`,
     },
@@ -395,12 +552,18 @@ export default function ProductionSummary() {
           >
             Last 30 Days
           </button>
+          <button
+            className={`btn ${activePreset === "all" ? "btn-primary" : "btn-secondary"}`}
+            onClick={() => handlePresetClick("all")}
+          >
+            All Time
+          </button>
         </div>
 
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
             type="date"
-            value={startDate}
+            value={startDate ?? ""}
             onChange={(e) => handleDateChange("start", e.target.value)}
             style={{
               padding: "6px 12px",
@@ -412,7 +575,7 @@ export default function ProductionSummary() {
           <span style={{ color: "#64748b" }}>to</span>
           <input
             type="date"
-            value={endDate}
+            value={endDate ?? ""}
             onChange={(e) => handleDateChange("end", e.target.value)}
             style={{
               padding: "6px 12px",
@@ -426,25 +589,33 @@ export default function ProductionSummary() {
 
       {/* View Mode Tabs */}
       <div style={{ display: "flex", gap: 0, marginBottom: 24, borderBottom: "1px solid #e2e8f0" }}>
-        {(["overall", "product", "order"] as ViewMode[]).map((mode) => (
-          <button
-            key={mode}
-            onClick={() => setViewMode(mode)}
-            style={{
-              padding: "12px 24px",
-              fontSize: 14,
-              fontWeight: 500,
-              border: "none",
-              borderBottom: viewMode === mode ? "2px solid #3b82f6" : "2px solid transparent",
-              backgroundColor: "transparent",
-              color: viewMode === mode ? "#3b82f6" : "#64748b",
-              cursor: "pointer",
-              textTransform: "capitalize",
-            }}
-          >
-            {mode === "overall" ? "Overall" : mode === "product" ? "By Product" : "By Order"}
-          </button>
-        ))}
+        {(["overall", "day", "worker", "product", "order"] as ViewMode[]).map((mode) => {
+          const labels: Record<ViewMode, string> = {
+            overall: "Overall",
+            day: "By Day",
+            worker: "By Worker",
+            product: "By Product",
+            order: "By Order",
+          };
+          return (
+            <button
+              key={mode}
+              onClick={() => setViewMode(mode)}
+              style={{
+                padding: "12px 24px",
+                fontSize: 14,
+                fontWeight: 500,
+                border: "none",
+                borderBottom: viewMode === mode ? "2px solid #3b82f6" : "2px solid transparent",
+                backgroundColor: "transparent",
+                color: viewMode === mode ? "#3b82f6" : "#64748b",
+                cursor: "pointer",
+              }}
+            >
+              {labels[mode]}
+            </button>
+          );
+        })}
       </div>
 
       {loading ? (
@@ -455,7 +626,7 @@ export default function ProductionSummary() {
           {viewMode === "overall" && summary && (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 16, marginBottom: 24 }}>
               <div style={{ padding: 16, backgroundColor: "#f8fafc", borderRadius: 8, border: "1px solid #e2e8f0" }}>
-                <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>Total Units</div>
+                <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>Step Completions</div>
                 <div style={{ fontSize: 24, fontWeight: 600 }}>{summary.totalUnits.toLocaleString()}</div>
               </div>
               <div style={{ padding: 16, backgroundColor: "#f8fafc", borderRadius: 8, border: "1px solid #e2e8f0" }}>
@@ -497,6 +668,24 @@ export default function ProductionSummary() {
               columns={dailyColumns}
               searchPlaceholder="Search days..."
               height="calc(100vh - 450px)"
+            />
+          )}
+
+          {viewMode === "day" && dayData && (
+            <DataGrid
+              data={dayData.days.map((d) => ({ ...d, id: d.date }))}
+              columns={dayColumns}
+              searchPlaceholder="Search days..."
+              height="calc(100vh - 300px)"
+            />
+          )}
+
+          {viewMode === "worker" && workerData && (
+            <DataGrid
+              data={workerData.workers.map((w) => ({ ...w, id: w.workerId }))}
+              columns={workerColumns}
+              searchPlaceholder="Search workers..."
+              height="calc(100vh - 300px)"
             />
           )}
 

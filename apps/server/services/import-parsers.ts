@@ -8,11 +8,13 @@ export interface ParsedEquipment {
   description: string;    // Work Type
   stationCount: number | null;  // null if 100 (virtual equipment)
   workCategoryName: string;     // Extracted from Work Type (e.g., "Cutting" from "Cutting - Manual")
+  hourlyCost: number;           // Equipment cost per hour
 }
 
 export interface ParsedWorker {
   name: string;
   columnIndex: number;
+  costPerHour: number;          // Worker cost per hour (from _COST row)
 }
 
 export interface ParsedCertification {
@@ -25,6 +27,69 @@ export interface ParsedEquipmentMatrix {
   workers: ParsedWorker[];
   certifications: ParsedCertification[];
   workCategories: Set<string>;
+}
+
+// Parsed Products CSV types (with versions and steps)
+export interface ParsedProductVersion {
+  productName: string;
+  versionName: string;
+  versionNumber: number;
+  isDefault: boolean;
+  steps: ParsedProductStepWithVersion[];
+}
+
+export interface ParsedProductStepWithVersion {
+  stepCode: string;
+  externalId: string;           // External system ID for materials supply
+  category: string;
+  componentName: string;
+  taskName: string;
+  timePerPieceSeconds: number;
+  equipmentCode: string;
+  dependencies: ParsedDependency[];
+  rowNumber: number;
+}
+
+export interface ParsedProducts {
+  products: Map<string, Map<number, ParsedProductVersion>>; // productName -> versionNumber -> version
+  components: Set<string>;
+  workCategories: Set<string>;
+  equipmentCodes: Set<string>;
+}
+
+// Parsed Orders CSV types
+export interface ParsedOrder {
+  productName: string;
+  quantity: number;
+  dueDate: string;              // YYYY-MM-DD
+  status: 'pending' | 'scheduled' | 'in_progress' | 'completed';
+  rowNumber: number;
+}
+
+export interface ParsedOrders {
+  orders: ParsedOrder[];
+  productNames: Set<string>;
+}
+
+// Parsed Production History types (v2 - uses product_name + due_date + version_name)
+export interface ParsedProductionRowV2 {
+  productName: string;
+  dueDate: string;              // YYYY-MM-DD (identifies the order)
+  versionName: string;          // Required - which version was used
+  stepCode: string;
+  workerName: string;
+  workDate: string;             // YYYY-MM-DD
+  startTime: string;            // HH:MM:SS
+  endTime: string;              // HH:MM:SS
+  units: number;
+  rowNumber: number;
+}
+
+export interface ParsedProductionDataV2 {
+  rows: ParsedProductionRowV2[];
+  orderKeys: Set<string>;       // "productName:dueDate" composite keys
+  stepCodes: Set<string>;
+  workerNames: Set<string>;
 }
 
 // Dependency with type
@@ -92,28 +157,16 @@ export function parseDelimited(content: string, delimiter: 'tsv' | 'csv' = 'tsv'
 }
 
 /**
- * Extract work category from Work Type description
- * e.g., "Cutting - Manual" -> "CUTTING"
- *       "Sewing - Team Lead" -> "SEWING"
- */
-export function extractWorkCategory(workType: string): string {
-  if (!workType) return 'OTHER';
-
-  // Extract the first word before any separator
-  const match = workType.match(/^([A-Za-z]+)/);
-  if (match && match[1]) {
-    return match[1].toUpperCase();
-  }
-  return 'OTHER';
-}
-
-/**
  * Parse Equipment-Worker Matrix spreadsheet
  *
  * Expected format:
- * Equipment Count | Work Code | Work Type | Worker1 | Worker2 | ...
- * 100            | CTL       | Cutting - Team Lead | Y | | ...
- * 1              | CMA       | Cutting - Manual    | Y | Y | ...
+ * equipment_code | work_category | work_type | station_count | hourly_cost | Worker1 | Worker2 | ...
+ * _COST          |               | Worker Cost Per Hour | 0 | 0 | 25.50 | 22.00 | ...
+ * STS            | Sewing        | Single Needle | 3 | 5.00 | Y | Y | ...
+ * CTL            | Cutting       | Team Lead | 100 | 0 | Y | | ...
+ *
+ * work_category: Explicit work category (e.g., "Sewing", "Cutting", "Inspection")
+ * work_type: Description/subtype of the work (e.g., "Single Needle", "Team Lead")
  */
 export function parseEquipmentMatrix(content: string, format: 'tsv' | 'csv' = 'tsv'): ParsedEquipmentMatrix {
   const rows = parseDelimited(content, format);
@@ -123,31 +176,43 @@ export function parseEquipmentMatrix(content: string, format: 'tsv' | 'csv' = 't
   }
 
   const headerRow = rows[0]!;
+  const headerLower = headerRow.map(h => h.toLowerCase());
 
   // Find column indices
-  const equipmentCountIdx = headerRow.findIndex(h =>
-    h.toLowerCase().includes('equipment') && h.toLowerCase().includes('count')
-  );
-  const workCodeIdx = headerRow.findIndex(h =>
-    h.toLowerCase().includes('work') && h.toLowerCase().includes('code')
-  );
-  const workTypeIdx = headerRow.findIndex(h =>
-    h.toLowerCase().includes('work') && h.toLowerCase().includes('type')
-  );
+  let equipmentCodeIdx = headerLower.findIndex(h => h.includes('equipment_code') || h.includes('equipmentcode'));
+  let workCategoryIdx = headerLower.findIndex(h => h.includes('work_category') || h.includes('workcategory'));
+  let stationCountIdx = headerLower.findIndex(h => h.includes('station_count') || h.includes('stationcount'));
+  let hourlyCostIdx = headerLower.findIndex(h => h.includes('hourly_cost') || h.includes('hourlycost'));
+  let workTypeIdx = headerLower.findIndex(h => h.includes('work_type') || h.includes('worktype'));
 
-  if (workCodeIdx === -1) {
-    throw new Error('Could not find "Work Code" column in header');
+  // Fallback to legacy column names
+  if (equipmentCodeIdx === -1) {
+    equipmentCodeIdx = headerLower.findIndex(h => h.includes('work') && h.includes('code'));
+  }
+  if (stationCountIdx === -1) {
+    stationCountIdx = headerLower.findIndex(h => h.includes('equipment') && h.includes('count'));
   }
 
-  // Worker columns start after Work Type (or Work Code if no Work Type)
-  const workerStartIdx = Math.max(workTypeIdx, workCodeIdx) + 1;
+  if (equipmentCodeIdx === -1) {
+    throw new Error('Could not find "equipment_code" or "Work Code" column in header');
+  }
 
-  // Extract worker names from header
-  const workers: ParsedWorker[] = [];
+  if (workCategoryIdx === -1) {
+    throw new Error('Missing required column: work_category');
+  }
+
+  // Worker columns start after the last metadata column
+  const lastMetaCol = Math.max(equipmentCodeIdx, workCategoryIdx, stationCountIdx, hourlyCostIdx, workTypeIdx);
+  const workerStartIdx = lastMetaCol + 1;
+
+  // Extract worker names from header (initially without costs)
+  const workerCosts = new Map<string, number>();
+  const workerColumns: { name: string; columnIndex: number }[] = [];
   for (let i = workerStartIdx; i < headerRow.length; i++) {
     const name = headerRow[i];
     if (name && name.trim()) {
-      workers.push({ name: name.trim(), columnIndex: i });
+      workerColumns.push({ name: name.trim(), columnIndex: i });
+      workerCosts.set(name.trim(), 0); // Default cost
     }
   }
 
@@ -160,19 +225,27 @@ export function parseEquipmentMatrix(content: string, format: 'tsv' | 'csv' = 't
     const row = rows[rowIdx];
     if (!row) continue;
 
-    // Skip empty rows or comment rows
-    const workCode = row[workCodeIdx]?.trim();
-    if (!workCode) continue;
+    const code = row[equipmentCodeIdx]?.trim();
+    if (!code) continue;
 
-    // Skip rows that look like comments (no work code, just text in first column)
-    if (equipmentCountIdx >= 0 && !row[equipmentCountIdx]?.trim() && !workCode) {
-      continue;
+    // Handle special _COST row for worker costs
+    if (code.toUpperCase() === '_COST') {
+      for (const workerCol of workerColumns) {
+        const costStr = row[workerCol.columnIndex]?.trim();
+        if (costStr) {
+          const cost = parseFloat(costStr);
+          if (!isNaN(cost)) {
+            workerCosts.set(workerCol.name, cost);
+          }
+        }
+      }
+      continue; // Don't add _COST as equipment
     }
 
-    // Parse equipment count
+    // Parse station count
     let stationCount: number | null = null;
-    if (equipmentCountIdx >= 0) {
-      const countStr = row[equipmentCountIdx]?.trim();
+    if (stationCountIdx >= 0) {
+      const countStr = row[stationCountIdx]?.trim();
       if (countStr) {
         const count = parseInt(countStr, 10);
         if (!isNaN(count)) {
@@ -182,28 +255,52 @@ export function parseEquipmentMatrix(content: string, format: 'tsv' | 'csv' = 't
       }
     }
 
-    const workType = workTypeIdx >= 0 ? row[workTypeIdx]?.trim() || '' : '';
-    const categoryName = extractWorkCategory(workType);
+    // Parse hourly cost
+    let hourlyCost = 0;
+    if (hourlyCostIdx >= 0) {
+      const costStr = row[hourlyCostIdx]?.trim();
+      if (costStr) {
+        const cost = parseFloat(costStr);
+        if (!isNaN(cost)) {
+          hourlyCost = cost;
+        }
+      }
+    }
+
+    // Get explicit work category (required)
+    const workCategory = row[workCategoryIdx]?.trim() || '';
+    const categoryName = workCategory.toUpperCase() || 'OTHER';
     workCategories.add(categoryName);
 
+    // Get work type description (optional)
+    const workType = workTypeIdx >= 0 ? row[workTypeIdx]?.trim() || '' : '';
+
     equipment.push({
-      name: workCode,
+      name: code,
       description: workType,
       stationCount,
       workCategoryName: categoryName,
+      hourlyCost,
     });
 
     // Check certifications for each worker
-    for (const worker of workers) {
-      const cellValue = row[worker.columnIndex]?.trim().toUpperCase();
+    for (const workerCol of workerColumns) {
+      const cellValue = row[workerCol.columnIndex]?.trim().toUpperCase();
       if (cellValue === 'Y' || cellValue === 'YES' || cellValue === 'X' || cellValue === '1') {
         certifications.push({
-          workerName: worker.name,
-          equipmentName: workCode,
+          workerName: workerCol.name,
+          equipmentName: code,
         });
       }
     }
   }
+
+  // Build workers array with costs
+  const workers: ParsedWorker[] = workerColumns.map(wc => ({
+    name: wc.name,
+    columnIndex: wc.columnIndex,
+    costPerHour: workerCosts.get(wc.name) || 0,
+  }));
 
   return {
     equipment,
@@ -539,6 +636,485 @@ export function parseProductionData(content: string, format: 'tsv' | 'csv' = 'cs
   return {
     rows: parsedRows,
     orderIds,
+    stepCodes,
+    workerNames,
+  };
+}
+
+/**
+ * Parse Products CSV spreadsheet (with versions and steps)
+ *
+ * Expected format:
+ * product_name,version_name,version_number,is_default,step_code,external_id,category,component,task_name,time_seconds,equipment_code,dependencies
+ * Tactical Vest,v1.0 Standard,1,Y,A1A,MAT-001,SEWING,Small Velcro Pocket,Hem short edges,20,STS,
+ * Tactical Vest,v1.0 Standard,1,Y,A1B,MAT-002,SEWING,Small Velcro Pocket,Sew hook Velcro,25,STS,A1A
+ */
+export function parseProducts(content: string, format: 'tsv' | 'csv' = 'csv'): ParsedProducts {
+  const rows = parseDelimited(content, format);
+
+  if (rows.length < 2) {
+    throw new Error('Products CSV must have at least a header row and one data row');
+  }
+
+  const headerRow = rows[0]!.map(h => h.toLowerCase().replace(/[_\s-]/g, ''));
+
+  // Find column indices (flexible matching)
+  const findColumn = (keywords: string[]): number => {
+    return headerRow.findIndex(h =>
+      keywords.some(k => h.includes(k))
+    );
+  };
+
+  const productNameIdx = findColumn(['productname']);
+  const versionNameIdx = findColumn(['versionname']);
+  const versionNumberIdx = findColumn(['versionnumber']);
+  const isDefaultIdx = findColumn(['isdefault', 'default']);
+  const stepCodeIdx = findColumn(['stepcode']);
+  const externalIdIdx = findColumn(['externalid', 'external']);
+  const categoryIdx = findColumn(['category']);
+  const componentIdx = findColumn(['component']);
+  const taskNameIdx = findColumn(['taskname', 'task']);
+  const timeIdx = findColumn(['timeseconds', 'time']);
+  const equipmentCodeIdx = findColumn(['equipmentcode', 'equipment']);
+  const dependenciesIdx = findColumn(['dependencies', 'dependency']);
+
+  // Validate required columns
+  const missing: string[] = [];
+  if (productNameIdx === -1) missing.push('product_name');
+  if (versionNameIdx === -1) missing.push('version_name');
+  if (versionNumberIdx === -1) missing.push('version_number');
+  if (stepCodeIdx === -1) missing.push('step_code');
+  if (categoryIdx === -1) missing.push('category');
+  if (taskNameIdx === -1) missing.push('task_name');
+  if (timeIdx === -1) missing.push('time_seconds');
+
+  if (missing.length > 0) {
+    throw new Error(`Missing required columns: ${missing.join(', ')}`);
+  }
+
+  // Map: productName -> versionNumber -> ParsedProductVersion
+  const products = new Map<string, Map<number, ParsedProductVersion>>();
+  const components = new Set<string>();
+  const workCategories = new Set<string>();
+  const equipmentCodes = new Set<string>();
+
+  // Process data rows
+  for (let rowIdx = 1; rowIdx < rows.length; rowIdx++) {
+    const row = rows[rowIdx];
+    if (!row) continue;
+
+    // Skip empty rows
+    const hasContent = row.some(cell => cell && cell.trim());
+    if (!hasContent) continue;
+
+    const rowNumber = rowIdx + 1; // 1-indexed for user display
+
+    // Parse product name
+    const productName = row[productNameIdx]?.trim();
+    if (!productName) {
+      throw new Error(`Row ${rowNumber}: Missing product_name`);
+    }
+
+    // Parse version info
+    const versionName = row[versionNameIdx]?.trim();
+    if (!versionName) {
+      throw new Error(`Row ${rowNumber}: Missing version_name`);
+    }
+
+    const versionNumberStr = row[versionNumberIdx]?.trim();
+    if (!versionNumberStr) {
+      throw new Error(`Row ${rowNumber}: Missing version_number`);
+    }
+    const versionNumber = parseInt(versionNumberStr, 10);
+    if (isNaN(versionNumber) || versionNumber <= 0) {
+      throw new Error(`Row ${rowNumber}: Invalid version_number "${versionNumberStr}" - must be a positive integer`);
+    }
+
+    // Parse is_default
+    const isDefaultStr = isDefaultIdx >= 0 ? row[isDefaultIdx]?.trim().toUpperCase() : '';
+    const isDefault = isDefaultStr === 'Y' || isDefaultStr === 'YES' || isDefaultStr === '1' || isDefaultStr === 'TRUE';
+
+    // Parse step_code
+    const stepCode = row[stepCodeIdx]?.trim();
+    if (!stepCode) {
+      throw new Error(`Row ${rowNumber}: Missing step_code`);
+    }
+
+    // Parse external_id (optional)
+    const externalId = externalIdIdx >= 0 ? row[externalIdIdx]?.trim() || '' : '';
+
+    // Parse category
+    const category = row[categoryIdx]?.trim().toUpperCase() || 'OTHER';
+    workCategories.add(category);
+
+    // Parse component (optional)
+    const componentName = componentIdx >= 0 ? row[componentIdx]?.trim() || '' : '';
+    if (componentName) {
+      components.add(componentName);
+    }
+
+    // Parse task name
+    const taskName = row[taskNameIdx]?.trim();
+    if (!taskName) {
+      throw new Error(`Row ${rowNumber}: Missing task_name`);
+    }
+
+    // Parse time
+    const timeStr = row[timeIdx]?.trim();
+    if (!timeStr) {
+      throw new Error(`Row ${rowNumber}: Missing time_seconds`);
+    }
+    const timePerPieceSeconds = parseInt(timeStr, 10);
+    if (isNaN(timePerPieceSeconds) || timePerPieceSeconds <= 0) {
+      throw new Error(`Row ${rowNumber}: Invalid time_seconds "${timeStr}" - must be a positive integer`);
+    }
+
+    // Parse equipment code (optional)
+    const equipmentCode = equipmentCodeIdx >= 0 ? row[equipmentCodeIdx]?.trim() || '' : '';
+    if (equipmentCode) {
+      equipmentCodes.add(equipmentCode);
+    }
+
+    // Parse dependencies
+    const dependencies: ParsedDependency[] = [];
+    if (dependenciesIdx >= 0) {
+      const depStr = row[dependenciesIdx]?.trim();
+      if (depStr) {
+        const depParts = depStr.split(',').map(d => d.trim()).filter(d => d);
+        for (const dep of depParts) {
+          const [depStepCode, typeStr] = dep.split(':').map(s => s.trim());
+          if (depStepCode) {
+            const type = typeStr?.toLowerCase() === 'start' ? 'start' : 'finish';
+            dependencies.push({ stepCode: depStepCode, type });
+          }
+        }
+      }
+    }
+
+    // Get or create product version structure
+    if (!products.has(productName)) {
+      products.set(productName, new Map());
+    }
+    const productVersions = products.get(productName)!;
+
+    if (!productVersions.has(versionNumber)) {
+      productVersions.set(versionNumber, {
+        productName,
+        versionName,
+        versionNumber,
+        isDefault,
+        steps: [],
+      });
+    }
+
+    const version = productVersions.get(versionNumber)!;
+
+    // Update isDefault if any row marks it as default
+    if (isDefault) {
+      version.isDefault = true;
+    }
+
+    // Add step to version
+    version.steps.push({
+      stepCode,
+      externalId,
+      category,
+      componentName,
+      taskName,
+      timePerPieceSeconds,
+      equipmentCode,
+      dependencies,
+      rowNumber,
+    });
+  }
+
+  if (products.size === 0) {
+    throw new Error('No valid product data found');
+  }
+
+  return {
+    products,
+    components,
+    workCategories,
+    equipmentCodes,
+  };
+}
+
+/**
+ * Parse Orders CSV spreadsheet
+ *
+ * Expected format:
+ * product_name,quantity,due_date,status
+ * Tactical Vest,500,2025-02-15,completed
+ * Medical Kit Pouch,100,2025-02-20,pending
+ */
+export function parseOrders(content: string, format: 'tsv' | 'csv' = 'csv'): ParsedOrders {
+  const rows = parseDelimited(content, format);
+
+  if (rows.length < 2) {
+    throw new Error('Orders CSV must have at least a header row and one data row');
+  }
+
+  const headerRow = rows[0]!.map(h => h.toLowerCase().replace(/[_\s-]/g, ''));
+
+  // Find column indices (flexible matching)
+  const findColumn = (keywords: string[]): number => {
+    return headerRow.findIndex(h =>
+      keywords.some(k => h.includes(k))
+    );
+  };
+
+  const productNameIdx = findColumn(['productname']);
+  const quantityIdx = findColumn(['quantity', 'qty']);
+  const dueDateIdx = findColumn(['duedate', 'due']);
+  const statusIdx = findColumn(['status']);
+
+  // Validate required columns
+  const missing: string[] = [];
+  if (productNameIdx === -1) missing.push('product_name');
+  if (quantityIdx === -1) missing.push('quantity');
+  if (dueDateIdx === -1) missing.push('due_date');
+
+  if (missing.length > 0) {
+    throw new Error(`Missing required columns: ${missing.join(', ')}`);
+  }
+
+  const orders: ParsedOrder[] = [];
+  const productNames = new Set<string>();
+
+  // Valid statuses
+  const validStatuses = new Set(['pending', 'scheduled', 'in_progress', 'completed']);
+
+  // Process data rows
+  for (let rowIdx = 1; rowIdx < rows.length; rowIdx++) {
+    const row = rows[rowIdx];
+    if (!row) continue;
+
+    // Skip empty rows
+    const hasContent = row.some(cell => cell && cell.trim());
+    if (!hasContent) continue;
+
+    const rowNumber = rowIdx + 1; // 1-indexed for user display
+
+    // Parse product name
+    const productName = row[productNameIdx]?.trim();
+    if (!productName) {
+      throw new Error(`Row ${rowNumber}: Missing product_name`);
+    }
+    productNames.add(productName);
+
+    // Parse quantity
+    const quantityStr = row[quantityIdx]?.trim();
+    if (!quantityStr) {
+      throw new Error(`Row ${rowNumber}: Missing quantity`);
+    }
+    const quantity = parseInt(quantityStr, 10);
+    if (isNaN(quantity) || quantity <= 0) {
+      throw new Error(`Row ${rowNumber}: Invalid quantity "${quantityStr}" - must be a positive integer`);
+    }
+
+    // Parse due_date
+    const dueDate = row[dueDateIdx]?.trim();
+    if (!dueDate) {
+      throw new Error(`Row ${rowNumber}: Missing due_date`);
+    }
+    if (!isValidDate(dueDate)) {
+      throw new Error(`Row ${rowNumber}: Invalid due_date format "${dueDate}" - expected YYYY-MM-DD`);
+    }
+
+    // Parse status (optional, defaults to 'pending')
+    let status: 'pending' | 'scheduled' | 'in_progress' | 'completed' = 'pending';
+    if (statusIdx >= 0) {
+      const statusStr = row[statusIdx]?.trim().toLowerCase();
+      if (statusStr) {
+        if (!validStatuses.has(statusStr)) {
+          throw new Error(`Row ${rowNumber}: Invalid status "${statusStr}" - must be one of: pending, scheduled, in_progress, completed`);
+        }
+        status = statusStr as typeof status;
+      }
+    }
+
+    orders.push({
+      productName,
+      quantity,
+      dueDate,
+      status,
+      rowNumber,
+    });
+  }
+
+  if (orders.length === 0) {
+    throw new Error('No valid order data found');
+  }
+
+  return {
+    orders,
+    productNames,
+  };
+}
+
+/**
+ * Parse Production History CSV spreadsheet (v2 - uses product_name + due_date + version_name)
+ *
+ * Expected format:
+ * product_name,due_date,version_name,step_code,worker_name,work_date,start_time,end_time,units_produced
+ * Tactical Vest,2025-01-10,v1.0 Standard,A1A,Maria Garcia,2025-01-05,07:00,11:00,120
+ */
+export function parseProductionDataV2(content: string, format: 'tsv' | 'csv' = 'csv'): ParsedProductionDataV2 {
+  const rows = parseDelimited(content, format);
+
+  if (rows.length < 2) {
+    throw new Error('Production history CSV must have at least a header row and one data row');
+  }
+
+  const headerRow = rows[0]!.map(h => h.toLowerCase().replace(/[_\s-]/g, ''));
+
+  // Find column indices (flexible matching)
+  const findColumn = (keywords: string[]): number => {
+    return headerRow.findIndex(h =>
+      keywords.some(k => h.includes(k))
+    );
+  };
+
+  const productNameIdx = findColumn(['productname']);
+  const dueDateIdx = findColumn(['duedate']);
+  const versionNameIdx = findColumn(['versionname', 'version']);
+  const stepCodeIdx = findColumn(['stepcode']);
+  const workerNameIdx = findColumn(['workername', 'worker']);
+  const workDateIdx = findColumn(['work_date', 'workdate']);
+  const startTimeIdx = findColumn(['starttime', 'start']);
+  const endTimeIdx = findColumn(['endtime', 'end']);
+  const unitsIdx = findColumn(['unitsproduced', 'units', 'output']);
+
+  // Validate required columns
+  const missing: string[] = [];
+  if (productNameIdx === -1) missing.push('product_name');
+  if (dueDateIdx === -1) missing.push('due_date');
+  if (versionNameIdx === -1) missing.push('version_name');
+  if (stepCodeIdx === -1) missing.push('step_code');
+  if (workerNameIdx === -1) missing.push('worker_name');
+  if (workDateIdx === -1) missing.push('work_date');
+  if (startTimeIdx === -1) missing.push('start_time');
+  if (endTimeIdx === -1) missing.push('end_time');
+  if (unitsIdx === -1) missing.push('units_produced');
+
+  if (missing.length > 0) {
+    throw new Error(`Missing required columns: ${missing.join(', ')}`);
+  }
+
+  const parsedRows: ParsedProductionRowV2[] = [];
+  const orderKeys = new Set<string>();
+  const stepCodes = new Set<string>();
+  const workerNames = new Set<string>();
+
+  // Process data rows
+  for (let rowIdx = 1; rowIdx < rows.length; rowIdx++) {
+    const row = rows[rowIdx];
+    if (!row) continue;
+
+    // Skip empty rows
+    const hasContent = row.some(cell => cell && cell.trim());
+    if (!hasContent) continue;
+
+    const rowNumber = rowIdx + 1; // 1-indexed for user display
+
+    // Parse product_name
+    const productName = row[productNameIdx]?.trim();
+    if (!productName) {
+      throw new Error(`Row ${rowNumber}: Missing product_name`);
+    }
+
+    // Parse due_date (identifies the order)
+    const dueDate = row[dueDateIdx]?.trim();
+    if (!dueDate) {
+      throw new Error(`Row ${rowNumber}: Missing due_date`);
+    }
+    if (!isValidDate(dueDate)) {
+      throw new Error(`Row ${rowNumber}: Invalid due_date format "${dueDate}" - expected YYYY-MM-DD`);
+    }
+
+    // Parse version_name (required - which version was used)
+    const versionName = row[versionNameIdx]?.trim();
+    if (!versionName) {
+      throw new Error(`Row ${rowNumber}: Missing version_name - version is required for production history`);
+    }
+
+    // Parse step_code
+    const stepCode = row[stepCodeIdx]?.trim();
+    if (!stepCode) {
+      throw new Error(`Row ${rowNumber}: Missing step_code`);
+    }
+
+    // Parse worker_name
+    const workerName = row[workerNameIdx]?.trim();
+    if (!workerName) {
+      throw new Error(`Row ${rowNumber}: Missing worker_name`);
+    }
+
+    // Parse work_date
+    const workDate = row[workDateIdx]?.trim();
+    if (!workDate) {
+      throw new Error(`Row ${rowNumber}: Missing work_date`);
+    }
+    if (!isValidDate(workDate)) {
+      throw new Error(`Row ${rowNumber}: Invalid work_date format "${workDate}" - expected YYYY-MM-DD`);
+    }
+
+    // Parse start_time
+    const startTime = row[startTimeIdx]?.trim();
+    if (!startTime) {
+      throw new Error(`Row ${rowNumber}: Missing start_time`);
+    }
+    if (!isValidTime(startTime)) {
+      throw new Error(`Row ${rowNumber}: Invalid start_time format "${startTime}" - expected HH:MM or HH:MM:SS`);
+    }
+
+    // Parse end_time
+    const endTime = row[endTimeIdx]?.trim();
+    if (!endTime) {
+      throw new Error(`Row ${rowNumber}: Missing end_time`);
+    }
+    if (!isValidTime(endTime)) {
+      throw new Error(`Row ${rowNumber}: Invalid end_time format "${endTime}" - expected HH:MM or HH:MM:SS`);
+    }
+
+    // Parse units
+    const unitsStr = row[unitsIdx]?.trim();
+    if (!unitsStr) {
+      throw new Error(`Row ${rowNumber}: Missing units_produced`);
+    }
+    const units = parseInt(unitsStr, 10);
+    if (isNaN(units) || units < 0) {
+      throw new Error(`Row ${rowNumber}: Invalid units_produced "${unitsStr}" - must be a non-negative number`);
+    }
+
+    // Add to tracking sets
+    const orderKey = `${productName}:${dueDate}`;
+    orderKeys.add(orderKey);
+    stepCodes.add(stepCode);
+    workerNames.add(workerName);
+
+    parsedRows.push({
+      productName,
+      dueDate,
+      versionName,
+      stepCode,
+      workerName,
+      workDate,
+      startTime: normalizeTime(startTime),
+      endTime: normalizeTime(endTime),
+      units,
+      rowNumber,
+    });
+  }
+
+  if (parsedRows.length === 0) {
+    throw new Error('No valid production history data found');
+  }
+
+  return {
+    rows: parsedRows,
+    orderKeys,
     stepCodes,
     workerNames,
   };
