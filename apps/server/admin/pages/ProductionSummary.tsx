@@ -2,7 +2,12 @@ import React, { useState, useEffect, useCallback } from "react";
 import type { Column } from "../components/DataGrid";
 import DataGrid from "../components/DataGrid";
 
-type ViewMode = "overall" | "day" | "worker" | "product" | "order";
+type ViewMode = "overall" | "day" | "worker" | "product" | "order" | "step";
+
+interface FilterOption {
+  id: number;
+  name: string;
+}
 
 interface DailyBreakdown {
   id: string;
@@ -111,6 +116,27 @@ interface OrderResponse {
   orders: Omit<OrderSummary, "id">[];
 }
 
+interface StepSummary {
+  id: number;
+  stepId: number;
+  stepName: string;
+  productName: string;
+  sequence: number;
+  totalUnits: number;
+  tasksCompleted: number;
+  workerCount: number;
+  totalHours: number;
+  laborCost: number;
+  equipmentCost: number;
+  totalCost: number;
+  efficiency: number;
+}
+
+interface StepResponse {
+  period: { start: string; end: string };
+  steps: Omit<StepSummary, "id">[];
+}
+
 function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString();
 }
@@ -151,6 +177,17 @@ export default function ProductionSummary() {
   const [workerData, setWorkerData] = useState<WorkerResponse | null>(null);
   const [productData, setProductData] = useState<ProductResponse | null>(null);
   const [orderData, setOrderData] = useState<OrderResponse | null>(null);
+  const [stepData, setStepData] = useState<StepResponse | null>(null);
+
+  // Filter options
+  const [productOptions, setProductOptions] = useState<FilterOption[]>([]);
+  const [workerOptions, setWorkerOptions] = useState<FilterOption[]>([]);
+  const [orderOptions, setOrderOptions] = useState<{ id: number; name: string; productName: string }[]>([]);
+
+  // Selected filters
+  const [selectedProducts, setSelectedProducts] = useState<number[]>([]);
+  const [selectedWorkers, setSelectedWorkers] = useState<number[]>([]);
+  const [selectedOrders, setSelectedOrders] = useState<number[]>([]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -158,6 +195,9 @@ export default function ProductionSummary() {
       const params = new URLSearchParams({ group_by: viewMode });
       if (startDate) params.set("start_date", startDate);
       if (endDate) params.set("end_date", endDate);
+      if (selectedProducts.length > 0) params.set("product_ids", selectedProducts.join(","));
+      if (selectedWorkers.length > 0) params.set("worker_ids", selectedWorkers.join(","));
+      if (selectedOrders.length > 0) params.set("order_ids", selectedOrders.join(","));
 
       const response = await fetch(`/api/production-summary?${params}`);
       const data = await response.json();
@@ -178,17 +218,56 @@ export default function ProductionSummary() {
         case "order":
           setOrderData(data as OrderResponse);
           break;
+        case "step":
+          setStepData(data as StepResponse);
+          break;
       }
     } catch (error) {
       console.error("Failed to fetch production summary:", error);
     } finally {
       setLoading(false);
     }
-  }, [startDate, endDate, viewMode]);
+  }, [startDate, endDate, viewMode, selectedProducts, selectedWorkers, selectedOrders]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Fetch filter options on mount
+  useEffect(() => {
+    const fetchFilterOptions = async () => {
+      try {
+        const [productsRes, workersRes, ordersRes] = await Promise.all([
+          fetch("/api/products"),
+          fetch("/api/workers"),
+          fetch("/api/orders"),
+        ]);
+
+        if (productsRes.ok) {
+          const products = await productsRes.json();
+          setProductOptions(products.map((p: { id: number; name: string }) => ({ id: p.id, name: p.name })));
+        }
+
+        if (workersRes.ok) {
+          const workers = await workersRes.json();
+          setWorkerOptions(workers.map((w: { id: number; name: string }) => ({ id: w.id, name: w.name })));
+        }
+
+        if (ordersRes.ok) {
+          const orders = await ordersRes.json();
+          setOrderOptions(orders.map((o: { id: number; product_name?: string; productName?: string }) => ({
+            id: o.id,
+            name: `Order #${o.id}`,
+            productName: o.product_name || o.productName || "",
+          })));
+        }
+      } catch (error) {
+        console.error("Failed to fetch filter options:", error);
+      }
+    };
+
+    fetchFilterOptions();
+  }, []);
 
   const handlePresetClick = (preset: string) => {
     const range = getDateRange(preset);
@@ -525,6 +604,84 @@ export default function ProductionSummary() {
     },
   ];
 
+  const stepColumns: Column<StepSummary>[] = [
+    {
+      key: "stepName",
+      header: "Step",
+      width: 180,
+      editable: false,
+    },
+    {
+      key: "productName",
+      header: "Product",
+      width: 140,
+      editable: false,
+    },
+    {
+      key: "sequence",
+      header: "Seq",
+      width: 50,
+      editable: false,
+    },
+    {
+      key: "totalUnits",
+      header: "Units",
+      width: 80,
+      editable: false,
+    },
+    {
+      key: "tasksCompleted",
+      header: "Tasks",
+      width: 70,
+      editable: false,
+    },
+    {
+      key: "workerCount",
+      header: "Workers",
+      width: 80,
+      editable: false,
+    },
+    {
+      key: "totalHours",
+      header: "Hours",
+      width: 80,
+      editable: false,
+      render: (value) => `${Number(value).toFixed(1)}h`,
+    },
+    {
+      key: "laborCost",
+      header: "Labor $",
+      width: 90,
+      editable: false,
+      render: (value) => `$${Number(value).toFixed(2)}`,
+    },
+    {
+      key: "equipmentCost",
+      header: "Equip $",
+      width: 90,
+      editable: false,
+      render: (value) => `$${Number(value).toFixed(2)}`,
+    },
+    {
+      key: "totalCost",
+      header: "Total $",
+      width: 90,
+      editable: false,
+      render: (value) => `$${Number(value).toFixed(2)}`,
+    },
+    {
+      key: "efficiency",
+      header: "Efficiency",
+      width: 90,
+      editable: false,
+      render: (value) => {
+        const eff = Number(value);
+        const color = eff >= 100 ? "#22c55e" : eff >= 80 ? "#f59e0b" : "#dc2626";
+        return <span style={{ color }}>{eff}%</span>;
+      },
+    },
+  ];
+
   const summary = overallData?.summary;
 
   return (
@@ -587,15 +744,85 @@ export default function ProductionSummary() {
         </div>
       </div>
 
+      {/* Filters */}
+      <div className="flex gap-4 mb-4 flex-wrap">
+        <div className="min-w-[160px]">
+          <label className="text-xs text-slate-500 block mb-1">Product</label>
+          <select
+            multiple
+            value={selectedProducts.map(String)}
+            onChange={(e) => {
+              const values = Array.from(e.target.selectedOptions, opt => Number(opt.value));
+              setSelectedProducts(values);
+            }}
+            className="w-full px-2 py-1.5 rounded-md border border-slate-200 text-sm min-h-[60px]"
+          >
+            {productOptions.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="min-w-[160px]">
+          <label className="text-xs text-slate-500 block mb-1">Worker</label>
+          <select
+            multiple
+            value={selectedWorkers.map(String)}
+            onChange={(e) => {
+              const values = Array.from(e.target.selectedOptions, opt => Number(opt.value));
+              setSelectedWorkers(values);
+            }}
+            className="w-full px-2 py-1.5 rounded-md border border-slate-200 text-sm min-h-[60px]"
+          >
+            {workerOptions.map((w) => (
+              <option key={w.id} value={w.id}>{w.name}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="min-w-[180px]">
+          <label className="text-xs text-slate-500 block mb-1">Order</label>
+          <select
+            multiple
+            value={selectedOrders.map(String)}
+            onChange={(e) => {
+              const values = Array.from(e.target.selectedOptions, opt => Number(opt.value));
+              setSelectedOrders(values);
+            }}
+            className="w-full px-2 py-1.5 rounded-md border border-slate-200 text-sm min-h-[60px]"
+          >
+            {orderOptions.map((o) => (
+              <option key={o.id} value={o.id}>{o.name} - {o.productName}</option>
+            ))}
+          </select>
+        </div>
+
+        {(selectedProducts.length > 0 || selectedWorkers.length > 0 || selectedOrders.length > 0) && (
+          <div className="flex items-end">
+            <button
+              className="btn btn-secondary h-8"
+              onClick={() => {
+                setSelectedProducts([]);
+                setSelectedWorkers([]);
+                setSelectedOrders([]);
+              }}
+            >
+              Clear Filters
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* View Mode Tabs */}
       <div style={{ display: "flex", gap: 0, marginBottom: 24, borderBottom: "1px solid #e2e8f0" }}>
-        {(["overall", "day", "worker", "product", "order"] as ViewMode[]).map((mode) => {
+        {(["overall", "day", "worker", "product", "order", "step"] as ViewMode[]).map((mode) => {
           const labels: Record<ViewMode, string> = {
             overall: "Overall",
             day: "By Day",
             worker: "By Worker",
             product: "By Product",
             order: "By Order",
+            step: "By Step",
           };
           return (
             <button
@@ -617,6 +844,91 @@ export default function ProductionSummary() {
           );
         })}
       </div>
+
+      {/* Active Filter Chips */}
+      {(selectedProducts.length > 0 || selectedWorkers.length > 0 || selectedOrders.length > 0 || startDate || endDate) && (
+        <div className="flex flex-wrap gap-2 mb-4 items-center">
+          <span className="text-xs text-slate-500">Filtering by:</span>
+
+          {startDate && endDate && (
+            <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">
+              {startDate === endDate ? startDate : `${startDate} to ${endDate}`}
+              <button
+                onClick={() => { setStartDate(null); setEndDate(null); setActivePreset("all"); }}
+                className="hover:bg-blue-200 rounded-full p-0.5"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </span>
+          )}
+
+          {selectedProducts.map(id => {
+            const product = productOptions.find(p => p.id === id);
+            return product ? (
+              <span key={`product-${id}`} className="inline-flex items-center gap-1 px-2 py-1 bg-purple-100 text-purple-800 text-xs rounded-full">
+                {product.name}
+                <button
+                  onClick={() => setSelectedProducts(prev => prev.filter(p => p !== id))}
+                  className="hover:bg-purple-200 rounded-full p-0.5"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </span>
+            ) : null;
+          })}
+
+          {selectedWorkers.map(id => {
+            const worker = workerOptions.find(w => w.id === id);
+            return worker ? (
+              <span key={`worker-${id}`} className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 text-xs rounded-full">
+                {worker.name}
+                <button
+                  onClick={() => setSelectedWorkers(prev => prev.filter(w => w !== id))}
+                  className="hover:bg-green-200 rounded-full p-0.5"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </span>
+            ) : null;
+          })}
+
+          {selectedOrders.map(id => {
+            const order = orderOptions.find(o => o.id === id);
+            return order ? (
+              <span key={`order-${id}`} className="inline-flex items-center gap-1 px-2 py-1 bg-orange-100 text-orange-800 text-xs rounded-full">
+                #{id} {order.productName}
+                <button
+                  onClick={() => setSelectedOrders(prev => prev.filter(o => o !== id))}
+                  className="hover:bg-orange-200 rounded-full p-0.5"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </span>
+            ) : null;
+          })}
+
+          {(selectedProducts.length > 0 || selectedWorkers.length > 0 || selectedOrders.length > 0) && (
+            <button
+              onClick={() => {
+                setSelectedProducts([]);
+                setSelectedWorkers([]);
+                setSelectedOrders([]);
+              }}
+              className="text-xs text-slate-500 hover:text-slate-700 underline ml-2"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <p>Loading...</p>
@@ -703,6 +1015,15 @@ export default function ProductionSummary() {
               data={orderData.orders.map((o) => ({ ...o, id: o.orderId }))}
               columns={orderColumns}
               searchPlaceholder="Search orders..."
+              height="calc(100vh - 300px)"
+            />
+          )}
+
+          {viewMode === "step" && stepData && (
+            <DataGrid
+              data={stepData.steps.map((s) => ({ ...s, id: s.stepId }))}
+              columns={stepColumns}
+              searchPlaceholder="Search steps..."
               height="calc(100vh - 300px)"
             />
           )}

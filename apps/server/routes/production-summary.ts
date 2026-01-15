@@ -42,37 +42,119 @@ interface OrderSummary {
   totalCost: number;
 }
 
+interface StepSummary {
+  stepId: number;
+  stepName: string;
+  productName: string;
+  sequence: number;
+  totalUnits: number;
+  tasksCompleted: number;
+  workerCount: number;
+  totalHours: number;
+  laborCost: number;
+  equipmentCost: number;
+  totalCost: number;
+  efficiency: number;
+}
+
+interface Filters {
+  startDate: string | null;
+  endDate: string | null;
+  productIds: number[];
+  orderIds: number[];
+  workerIds: number[];
+  stepIds: number[];
+}
+
+function parseFilters(url: URL): Filters {
+  const date = url.searchParams.get("date");
+  let startDate = url.searchParams.get("start_date");
+  let endDate = url.searchParams.get("end_date");
+
+  // If single date provided, use it for both start and end
+  if (date && !startDate && !endDate) {
+    startDate = date;
+    endDate = date;
+  }
+
+  // Parse array filters (comma-separated)
+  const parseIds = (param: string | null): number[] => {
+    if (!param) return [];
+    return param.split(",").map(Number).filter(n => !isNaN(n));
+  };
+
+  return {
+    startDate: startDate || null,
+    endDate: endDate || null,
+    productIds: parseIds(url.searchParams.get("product_ids")),
+    orderIds: parseIds(url.searchParams.get("order_ids")),
+    workerIds: parseIds(url.searchParams.get("worker_ids")),
+    stepIds: parseIds(url.searchParams.get("step_ids")),
+  };
+}
+
+function buildFilterClause(filters: Filters, tableAliases: { se?: string; twa?: string; ps?: string; o?: string; p?: string } = {}): { clause: string; args: (string | number | null)[] } {
+  const conditions: string[] = [];
+  const args: (string | number | null)[] = [];
+
+  const se = tableAliases.se || "se";
+  const twa = tableAliases.twa || "twa";
+  const ps = tableAliases.ps || "ps";
+  const o = tableAliases.o || "o";
+  const p = tableAliases.p || "p";
+
+  if (filters.startDate && filters.endDate) {
+    conditions.push(`${se}.date BETWEEN ? AND ?`);
+    args.push(filters.startDate, filters.endDate);
+  }
+
+  if (filters.productIds.length > 0) {
+    conditions.push(`${p}.id IN (${filters.productIds.map(() => "?").join(",")})`);
+    args.push(...filters.productIds);
+  }
+
+  if (filters.orderIds.length > 0) {
+    conditions.push(`${o}.id IN (${filters.orderIds.map(() => "?").join(",")})`);
+    args.push(...filters.orderIds);
+  }
+
+  if (filters.workerIds.length > 0) {
+    conditions.push(`${twa}.worker_id IN (${filters.workerIds.map(() => "?").join(",")})`);
+    args.push(...filters.workerIds);
+  }
+
+  if (filters.stepIds.length > 0) {
+    conditions.push(`${ps}.id IN (${filters.stepIds.map(() => "?").join(",")})`);
+    args.push(...filters.stepIds);
+  }
+
+  return {
+    clause: conditions.length > 0 ? conditions.join(" AND ") : "1=1",
+    args,
+  };
+}
+
 export async function handleProductionSummary(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
 
   // GET /api/production-summary
   if (url.pathname === "/api/production-summary" && request.method === "GET") {
     const groupBy = url.searchParams.get("group_by") || "overall";
-    const date = url.searchParams.get("date");
-    let startDate = url.searchParams.get("start_date");
-    let endDate = url.searchParams.get("end_date");
-
-    // If single date provided, use it for both start and end
-    if (date && !startDate && !endDate) {
-      startDate = date;
-      endDate = date;
-    }
-
-    // If no dates provided, use null to indicate "all time"
-    const start = startDate || null;
-    const end = endDate || null;
+    const filters = parseFilters(url);
 
     switch (groupBy) {
       case "overall":
-        return getOverallSummary(start, end);
+        return getOverallSummary(filters);
       case "day":
-        return getDaySummary(start, end);
+        return getDaySummary(filters);
       case "worker":
-        return getWorkerSummary(start, end);
+        return getWorkerSummary(filters);
       case "product":
-        return getProductSummary(start, end);
+        return getProductSummary(filters);
       case "order":
-        return getOrderSummary(start, end);
+        return getOrderSummary(filters);
+      case "step":
+        return getStepSummary(filters);
       default:
         return Response.json({ error: "Invalid group_by value" }, { status: 400 });
     }
@@ -81,10 +163,10 @@ export async function handleProductionSummary(request: Request): Promise<Respons
   return null;
 }
 
-async function getOverallSummary(startDate: string | null, endDate: string | null): Promise<Response> {
-  // Build date filter clause
-  const dateFilter = startDate && endDate ? "WHERE se.date BETWEEN ? AND ?" : "";
-  const dateArgs = startDate && endDate ? [startDate, endDate] : [];
+async function getOverallSummary(filters: Filters): Promise<Response> {
+  // Build filter clause - need to join through schedules and orders to filter by product/order
+  const needsOrderJoin = filters.productIds.length > 0 || filters.orderIds.length > 0;
+  const { clause: filterClause, args: filterArgs } = buildFilterClause(filters);
 
   // Get daily breakdown with workers aggregated
   const dailyResult = await db.execute({
@@ -121,18 +203,19 @@ async function getOverallSummary(startDate: string | null, endDate: string | nul
       LEFT JOIN workers w ON twa.worker_id = w.id
       LEFT JOIN product_steps ps ON se.product_step_id = ps.id
       LEFT JOIN equipment e ON ps.equipment_id = e.id
-      ${dateFilter}
+      ${needsOrderJoin ? `
+      JOIN schedules s ON se.schedule_id = s.id
+      JOIN orders o ON s.order_id = o.id
+      JOIN products p ON o.product_id = p.id
+      ` : ""}
+      WHERE ${filterClause}
       GROUP BY se.date
       ORDER BY se.date DESC
     `,
-    args: dateArgs
+    args: filterArgs
   });
 
   // Get workers per day
-  const workersDateFilter = startDate && endDate
-    ? "WHERE se.date BETWEEN ? AND ? AND twa.status IN ('in_progress', 'completed')"
-    : "WHERE twa.status IN ('in_progress', 'completed')";
-
   const workersResult = await db.execute({
     sql: `
       SELECT DISTINCT
@@ -141,10 +224,16 @@ async function getOverallSummary(startDate: string | null, endDate: string | nul
       FROM schedule_entries se
       JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
       JOIN workers w ON twa.worker_id = w.id
-      ${workersDateFilter}
+      LEFT JOIN product_steps ps ON se.product_step_id = ps.id
+      ${needsOrderJoin ? `
+      JOIN schedules s ON se.schedule_id = s.id
+      JOIN orders o ON s.order_id = o.id
+      JOIN products p ON o.product_id = p.id
+      ` : ""}
+      WHERE twa.status IN ('in_progress', 'completed') AND ${filterClause}
       ORDER BY se.date DESC, w.name
     `,
-    args: dateArgs
+    args: filterArgs
   });
 
   // Group workers by date
@@ -203,7 +292,7 @@ async function getOverallSummary(startDate: string | null, endDate: string | nul
   const allWorkers = [...new Set(dailyBreakdown.flatMap(d => d.workers))];
 
   return Response.json({
-    period: { start: startDate, end: endDate },
+    period: { start: filters.startDate, end: filters.endDate },
     summary: {
       totalUnits: totals.totalUnits,
       tasksCompleted: totals.tasksCompleted,
@@ -218,9 +307,9 @@ async function getOverallSummary(startDate: string | null, endDate: string | nul
   });
 }
 
-async function getDaySummary(startDate: string | null, endDate: string | null): Promise<Response> {
-  const dateFilter = startDate && endDate ? "WHERE se.date BETWEEN ? AND ?" : "";
-  const dateArgs = startDate && endDate ? [startDate, endDate] : [];
+async function getDaySummary(filters: Filters): Promise<Response> {
+  const needsOrderJoin = filters.productIds.length > 0 || filters.orderIds.length > 0;
+  const { clause: filterClause, args: filterArgs } = buildFilterClause(filters);
 
   const result = await db.execute({
     sql: `
@@ -257,11 +346,16 @@ async function getDaySummary(startDate: string | null, endDate: string | null): 
       LEFT JOIN workers w ON twa.worker_id = w.id
       LEFT JOIN product_steps ps ON se.product_step_id = ps.id
       LEFT JOIN equipment e ON ps.equipment_id = e.id
-      ${dateFilter}
+      ${needsOrderJoin ? `
+      JOIN schedules s ON se.schedule_id = s.id
+      JOIN orders o ON s.order_id = o.id
+      JOIN products p ON o.product_id = p.id
+      ` : ""}
+      WHERE ${filterClause}
       GROUP BY se.date
       ORDER BY se.date DESC
     `,
-    args: dateArgs
+    args: filterArgs
   });
 
   const days = (result.rows as unknown as {
@@ -287,14 +381,14 @@ async function getDaySummary(startDate: string | null, endDate: string | null): 
   }));
 
   return Response.json({
-    period: { start: startDate, end: endDate },
+    period: { start: filters.startDate, end: filters.endDate },
     days
   });
 }
 
-async function getWorkerSummary(startDate: string | null, endDate: string | null): Promise<Response> {
-  const dateFilter = startDate && endDate ? "WHERE se.date BETWEEN ? AND ?" : "";
-  const dateArgs = startDate && endDate ? [startDate, endDate] : [];
+async function getWorkerSummary(filters: Filters): Promise<Response> {
+  const needsOrderJoin = filters.productIds.length > 0 || filters.orderIds.length > 0;
+  const { clause: filterClause, args: filterArgs } = buildFilterClause(filters);
 
   const result = await db.execute({
     sql: `
@@ -324,11 +418,16 @@ async function getWorkerSummary(startDate: string | null, endDate: string | null
       JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
       JOIN workers w ON twa.worker_id = w.id
       LEFT JOIN product_steps ps ON se.product_step_id = ps.id
-      ${dateFilter}
+      ${needsOrderJoin ? `
+      JOIN schedules s ON se.schedule_id = s.id
+      JOIN orders o ON s.order_id = o.id
+      JOIN products p ON o.product_id = p.id
+      ` : ""}
+      WHERE ${filterClause}
       GROUP BY w.id, w.name
       ORDER BY total_units DESC
     `,
-    args: dateArgs
+    args: filterArgs
   });
 
   const workers = (result.rows as unknown as {
@@ -350,14 +449,13 @@ async function getWorkerSummary(startDate: string | null, endDate: string | null
   }));
 
   return Response.json({
-    period: { start: startDate, end: endDate },
+    period: { start: filters.startDate, end: filters.endDate },
     workers
   });
 }
 
-async function getProductSummary(startDate: string | null, endDate: string | null): Promise<Response> {
-  const dateFilter = startDate && endDate ? "WHERE se.date BETWEEN ? AND ?" : "";
-  const dateArgs = startDate && endDate ? [startDate, endDate] : [];
+async function getProductSummary(filters: Filters): Promise<Response> {
+  const { clause: filterClause, args: filterArgs } = buildFilterClause(filters);
 
   const result = await db.execute({
     sql: `
@@ -397,11 +495,11 @@ async function getProductSummary(startDate: string | null, endDate: string | nul
       LEFT JOIN workers w ON twa.worker_id = w.id
       LEFT JOIN product_steps ps ON se.product_step_id = ps.id
       LEFT JOIN equipment e ON ps.equipment_id = e.id
-      ${dateFilter}
+      WHERE ${filterClause}
       GROUP BY p.id, p.name
       ORDER BY total_units DESC
     `,
-    args: dateArgs
+    args: filterArgs
   });
 
   const products: ProductSummary[] = (result.rows as unknown as {
@@ -427,14 +525,13 @@ async function getProductSummary(startDate: string | null, endDate: string | nul
   }));
 
   return Response.json({
-    period: { start: startDate, end: endDate },
+    period: { start: filters.startDate, end: filters.endDate },
     products
   });
 }
 
-async function getOrderSummary(startDate: string | null, endDate: string | null): Promise<Response> {
-  const dateFilter = startDate && endDate ? "AND se.date BETWEEN ? AND ?" : "";
-  const dateArgs = startDate && endDate ? [startDate, endDate] : [];
+async function getOrderSummary(filters: Filters): Promise<Response> {
+  const { clause: filterClause, args: filterArgs } = buildFilterClause(filters);
 
   // First, get the absolute last step sequence and total estimated time for each order's build version
   const stepsResult = await db.execute(`
@@ -504,11 +601,11 @@ async function getOrderSummary(startDate: string | null, endDate: string | null)
       LEFT JOIN workers w ON twa.worker_id = w.id
       LEFT JOIN product_steps ps ON se.product_step_id = ps.id
       LEFT JOIN equipment e ON ps.equipment_id = e.id
-      WHERE 1=1 ${dateFilter}
+      WHERE ${filterClause}
       GROUP BY o.id, p.name, o.quantity, bvs.sequence
       ORDER BY o.id, bvs.sequence
     `,
-    args: dateArgs
+    args: filterArgs
   });
 
   // Group rows by order_id and calculate metrics
@@ -600,7 +697,91 @@ async function getOrderSummary(startDate: string | null, endDate: string | null)
   orders.sort((a, b) => a.progressPercent - b.progressPercent);
 
   return Response.json({
-    period: { start: startDate, end: endDate },
+    period: { start: filters.startDate, end: filters.endDate },
     orders
+  });
+}
+
+async function getStepSummary(filters: Filters): Promise<Response> {
+  const { clause: filterClause, args: filterArgs } = buildFilterClause(filters);
+
+  const result = await db.execute({
+    sql: `
+      SELECT
+        ps.id as step_id,
+        ps.name as step_name,
+        p.name as product_name,
+        ps.sequence,
+        COALESCE(SUM(twa.actual_output), 0) as total_units,
+        COUNT(DISTINCT CASE WHEN twa.status = 'completed' THEN twa.id END) as tasks_completed,
+        COUNT(DISTINCT twa.worker_id) as worker_count,
+        COALESCE(SUM(
+          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
+          THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
+            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END
+          ELSE 0 END
+        ), 0) as total_hours,
+        COALESCE(SUM(
+          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
+          THEN ((julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
+            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END) * w.cost_per_hour
+          ELSE 0 END
+        ), 0) as labor_cost,
+        COALESCE(SUM(
+          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL AND ps.equipment_id IS NOT NULL
+          THEN ((julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
+            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END) * e.hourly_cost
+          ELSE 0 END
+        ), 0) as equipment_cost,
+        COALESCE(SUM(
+          CASE WHEN twa.actual_output > 0
+          THEN ps.time_per_piece_seconds * twa.actual_output / 3600.0
+          ELSE 0 END
+        ), 0) as expected_hours
+      FROM schedule_entries se
+      JOIN schedules s ON se.schedule_id = s.id
+      JOIN orders o ON s.order_id = o.id
+      JOIN products p ON o.product_id = p.id
+      JOIN product_steps ps ON se.product_step_id = ps.id
+      LEFT JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
+      LEFT JOIN workers w ON twa.worker_id = w.id
+      LEFT JOIN equipment e ON ps.equipment_id = e.id
+      WHERE ${filterClause}
+      GROUP BY ps.id, ps.name, p.name, ps.sequence
+      ORDER BY p.name, ps.sequence
+    `,
+    args: filterArgs
+  });
+
+  const steps: StepSummary[] = (result.rows as unknown as {
+    step_id: number;
+    step_name: string;
+    product_name: string;
+    sequence: number;
+    total_units: number;
+    tasks_completed: number;
+    worker_count: number;
+    total_hours: number;
+    labor_cost: number;
+    equipment_cost: number;
+    expected_hours: number;
+  }[]).map(row => ({
+    stepId: row.step_id,
+    stepName: row.step_name,
+    productName: row.product_name,
+    sequence: row.sequence,
+    totalUnits: row.total_units,
+    tasksCompleted: row.tasks_completed,
+    workerCount: row.worker_count,
+    totalHours: Math.round(row.total_hours * 100) / 100,
+    laborCost: Math.round(row.labor_cost * 100) / 100,
+    equipmentCost: Math.round(row.equipment_cost * 100) / 100,
+    totalCost: Math.round((row.labor_cost + row.equipment_cost) * 100) / 100,
+    efficiency: row.total_hours > 0 ? Math.round((row.expected_hours / row.total_hours) * 100) : 0
+  }));
+
+  return Response.json({
+    period: { start: filters.startDate, end: filters.endDate },
+    steps
   });
 }
