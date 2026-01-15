@@ -4,6 +4,7 @@ import { Router, Route, Switch, Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
   Upload,
+  Download,
   FileSpreadsheet,
   Package,
   Users,
@@ -25,6 +26,7 @@ import ImportWorkerEquipment from "./pages/ImportWorkerEquipment";
 import ImportProducts from "./pages/ImportProducts";
 import ImportOrders from "./pages/ImportOrders";
 import ImportProductionHistory from "./pages/ImportProductionHistory";
+import Export from "./pages/Export";
 import CertificationMatrix from "./pages/CertificationMatrix";
 import Orders from "./pages/Orders";
 import Schedules from "./pages/Schedules";
@@ -117,6 +119,10 @@ function Sidebar() {
           <NavItem href="/import/production-history" icon={<FileSpreadsheet size={18} />} label="4. Production History" />
         </NavGroup>
 
+        <NavGroup title="Export">
+          <NavItem href="/export" icon={<Download size={18} />} label="Export Data" />
+        </NavGroup>
+
         <NavGroup title="Production">
           <NavItem href="/orders" icon={<ClipboardList size={18} />} label="Orders" />
           <NavItem href="/schedules" icon={<Calendar size={18} />} label="Schedules" />
@@ -146,6 +152,7 @@ function App() {
             <Route path="/import/products" component={ImportProducts} />
             <Route path="/import/orders" component={ImportOrders} />
             <Route path="/import/production-history" component={ImportProductionHistory} />
+            <Route path="/export" component={Export} />
             <Route path="/import-wizard" component={ImportWizard} />
             <Route path="/import" component={Import} />
             <Route path="/import-production" component={ImportProductionData} />
