@@ -1,59 +1,152 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { Router, Route, Switch, Link } from "wouter";
+import { Router, Route, Switch, Link, useLocation } from "wouter";
+import {
+  LayoutDashboard,
+  Upload,
+  FileSpreadsheet,
+  Package,
+  Users,
+  Award,
+  ClipboardList,
+  Calendar,
+  Wrench,
+  BarChart3,
+} from "lucide-react";
 import "./index.css";
 
 // Pages
 import Workers from "./pages/Workers";
 import ProductSteps from "./pages/ProductSteps";
 import Import from "./pages/Import";
+import ImportProductionData from "./pages/ImportProductionData";
 import CertificationMatrix from "./pages/CertificationMatrix";
 import Orders from "./pages/Orders";
 import Schedules from "./pages/Schedules";
 import ScheduleDetail from "./pages/ScheduleDetail";
+import Equipment from "./pages/Equipment";
+import BuildVersions from "./pages/BuildVersions";
+import ProductionSummary from "./pages/ProductionSummary";
+
+interface NavItemProps {
+  href: string;
+  icon: React.ReactNode;
+  label: string;
+}
+
+function NavItem({ href, icon, label }: NavItemProps) {
+  const [location] = useLocation();
+  const isActive = location === href || (href !== "/" && location.startsWith(href));
+
+  return (
+    <Link
+      href={href}
+      className={`nav-item ${isActive ? "active" : ""}`}
+    >
+      <span className="nav-icon">{icon}</span>
+      <span className="nav-label">{label}</span>
+    </Link>
+  );
+}
+
+interface NavGroupProps {
+  title: string;
+  children: React.ReactNode;
+}
+
+function NavGroup({ title, children }: NavGroupProps) {
+  return (
+    <div className="nav-group">
+      <div className="nav-group-title">{title}</div>
+      {children}
+    </div>
+  );
+}
 
 function Dashboard() {
   return (
     <div className="page">
       <h1>Dashboard</h1>
-      <p>Welcome to SIJ Manager Admin</p>
-      <nav className="nav-links">
-        <Link href="/workers">Workers</Link>
-        <Link href="/orders">Orders</Link>
-        <Link href="/schedules">Schedules</Link>
-        <Link href="/equipment">Equipment</Link>
-      </nav>
+      <p style={{ color: "var(--text-secondary)", marginBottom: "24px" }}>
+        Welcome to SIJ Manager Admin
+      </p>
+      <div className="dashboard-cards">
+        <Link href="/orders" className="dashboard-card">
+          <ClipboardList size={24} />
+          <span>Orders</span>
+        </Link>
+        <Link href="/schedules" className="dashboard-card">
+          <Calendar size={24} />
+          <span>Schedules</span>
+        </Link>
+        <Link href="/workers" className="dashboard-card">
+          <Users size={24} />
+          <span>Workers</span>
+        </Link>
+        <Link href="/products" className="dashboard-card">
+          <Package size={24} />
+          <span>Products</span>
+        </Link>
+      </div>
     </div>
+  );
+}
+
+function Sidebar() {
+  return (
+    <aside className="sidebar">
+      <div className="sidebar-header">
+        <Link href="/" className="sidebar-logo">
+          <span className="logo-icon">SIJ</span>
+          <span className="logo-text">Manager</span>
+        </Link>
+      </div>
+
+      <nav className="sidebar-nav">
+        <NavItem href="/" icon={<LayoutDashboard size={18} />} label="Dashboard" />
+
+        <NavGroup title="Import">
+          <NavItem href="/import" icon={<Upload size={18} />} label="Equipment & Workers" />
+          <NavItem href="/import-production" icon={<FileSpreadsheet size={18} />} label="Production Data" />
+        </NavGroup>
+
+        <NavGroup title="Production">
+          <NavItem href="/orders" icon={<ClipboardList size={18} />} label="Orders" />
+          <NavItem href="/schedules" icon={<Calendar size={18} />} label="Schedules" />
+          <NavItem href="/production-summary" icon={<BarChart3 size={18} />} label="Summary" />
+        </NavGroup>
+
+        <NavGroup title="Setup">
+          <NavItem href="/products" icon={<Package size={18} />} label="Products" />
+          <NavItem href="/workers" icon={<Users size={18} />} label="Workers" />
+          <NavItem href="/certifications" icon={<Award size={18} />} label="Certifications" />
+          <NavItem href="/equipment" icon={<Wrench size={18} />} label="Equipment" />
+        </NavGroup>
+      </nav>
+    </aside>
   );
 }
 
 function App() {
   return (
     <Router base="/admin">
-      <div className="app">
-        <header className="header">
-          <Link href="/" className="logo">SIJ Manager</Link>
-          <nav className="nav">
-            <Link href="/import">Import</Link>
-            <Link href="/products">Products</Link>
-            <Link href="/workers">Workers</Link>
-            <Link href="/certifications">Certifications</Link>
-            <Link href="/orders">Orders</Link>
-            <Link href="/schedules">Schedules</Link>
-            <Link href="/equipment">Equipment</Link>
-          </nav>
-        </header>
-        <main className="main">
+      <div className="app-layout">
+        <Sidebar />
+        <main className="main-content">
           <Switch>
             <Route path="/" component={Dashboard} />
             <Route path="/import" component={Import} />
+            <Route path="/import-production" component={ImportProductionData} />
+            <Route path="/products/:id/build-versions">{(params) => <BuildVersions params={params} />}</Route>
             <Route path="/products/:id">{(params) => <ProductSteps params={params} />}</Route>
             <Route path="/products" component={ProductSteps} />
             <Route path="/workers" component={Workers} />
             <Route path="/certifications" component={CertificationMatrix} />
+            <Route path="/equipment" component={Equipment} />
             <Route path="/orders" component={Orders} />
             <Route path="/schedules/:id" component={ScheduleDetail} />
             <Route path="/schedules" component={Schedules} />
+            <Route path="/production-summary" component={ProductionSummary} />
             <Route>
               <div className="page">
                 <h1>404 - Not Found</h1>

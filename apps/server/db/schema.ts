@@ -191,6 +191,51 @@ export async function ensureSchema(db: Client) {
     )
   `);
 
+  // Product build versions - configurations of which steps are included
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS product_build_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      version_name TEXT NOT NULL,
+      version_number INTEGER NOT NULL,
+      description TEXT,
+      status TEXT DEFAULT 'active' CHECK (status IN ('draft', 'active', 'deprecated')),
+      is_default INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (product_id) REFERENCES products(id),
+      UNIQUE (product_id, version_number)
+    )
+  `);
+
+  // Build version steps - links build versions to product steps
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS build_version_steps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      build_version_id INTEGER NOT NULL,
+      product_step_id INTEGER NOT NULL,
+      sequence INTEGER NOT NULL,
+      FOREIGN KEY (build_version_id) REFERENCES product_build_versions(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_step_id) REFERENCES product_steps(id),
+      UNIQUE (build_version_id, product_step_id)
+    )
+  `);
+
+  // Build version metrics - aggregated performance metrics per build version
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS build_version_metrics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      build_version_id INTEGER NOT NULL,
+      total_units_produced INTEGER DEFAULT 0,
+      total_time_seconds INTEGER DEFAULT 0,
+      avg_time_per_unit_seconds REAL,
+      total_cost REAL DEFAULT 0,
+      sample_count INTEGER DEFAULT 0,
+      last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (build_version_id) REFERENCES product_build_versions(id),
+      UNIQUE (build_version_id)
+    )
+  `);
+
   // Schedules table
   await db.execute(`
     CREATE TABLE IF NOT EXISTS schedules (
@@ -291,6 +336,11 @@ export async function ensureSchema(db: Client) {
     "ALTER TABLE product_steps ADD COLUMN step_code TEXT",
     // Step dependencies migrations
     "ALTER TABLE step_dependencies ADD COLUMN dependency_type TEXT DEFAULT 'finish'",
+    // Cost tracking migrations
+    "ALTER TABLE workers ADD COLUMN cost_per_hour REAL DEFAULT 0",
+    "ALTER TABLE equipment ADD COLUMN hourly_cost REAL DEFAULT 0",
+    // Build version migrations
+    "ALTER TABLE orders ADD COLUMN build_version_id INTEGER REFERENCES product_build_versions(id)",
   ];
 
   for (const migration of migrations) {
@@ -307,6 +357,57 @@ export async function ensureSchema(db: Client) {
   await db.execute("CREATE INDEX IF NOT EXISTS idx_product_steps_work_category ON product_steps(work_category_id)");
   await db.execute("CREATE INDEX IF NOT EXISTS idx_product_steps_component ON product_steps(component_id)");
   await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_product_steps_code_product ON product_steps(product_id, step_code)");
+
+  // Indexes for build version tables
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_build_versions_product ON product_build_versions(product_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_build_versions_default ON product_build_versions(product_id, is_default)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_build_version_steps_version ON build_version_steps(build_version_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_build_version_steps_step ON build_version_steps(product_step_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_build_version ON orders(build_version_id)");
+
+  // Backfill: Create default build versions for products that don't have one
+  // This ensures existing products get a v1.0 build version with all their steps
+  await backfillDefaultBuildVersions(db);
+}
+
+// Backfill function to create v1.0 build versions for existing products
+async function backfillDefaultBuildVersions(db: Client) {
+  // Get all products that don't have a build version yet
+  const productsWithoutVersion = await db.execute(`
+    SELECT p.id as product_id
+    FROM products p
+    LEFT JOIN product_build_versions bv ON bv.product_id = p.id
+    WHERE bv.id IS NULL
+  `);
+
+  for (const row of productsWithoutVersion.rows) {
+    const productId = (row as { product_id: number }).product_id;
+
+    // Create v1.0 build version
+    const result = await db.execute({
+      sql: `INSERT INTO product_build_versions (product_id, version_name, version_number, description, status, is_default)
+            VALUES (?, 'v1.0', 1, 'Initial build version (auto-created)', 'active', 1)`,
+      args: [productId]
+    });
+    const buildVersionId = result.lastInsertRowid;
+
+    // Add all existing steps to this build version
+    await db.execute({
+      sql: `INSERT INTO build_version_steps (build_version_id, product_step_id, sequence)
+            SELECT ?, id, sequence FROM product_steps WHERE product_id = ?`,
+      args: [buildVersionId, productId]
+    });
+  }
+
+  // Backfill orders that don't have a build version
+  await db.execute(`
+    UPDATE orders
+    SET build_version_id = (
+      SELECT bv.id FROM product_build_versions bv
+      WHERE bv.product_id = orders.product_id AND bv.is_default = 1
+    )
+    WHERE build_version_id IS NULL
+  `);
 }
 
 // Type definitions for database rows
@@ -360,6 +461,7 @@ export interface Order {
   due_date: string;
   status: 'pending' | 'scheduled' | 'in_progress' | 'completed';
   color: string | null;
+  build_version_id: number | null;
   created_at: string;
 }
 
@@ -393,6 +495,7 @@ export interface Equipment {
   status: 'available' | 'in_use' | 'maintenance' | 'retired';
   station_count: number | null;
   work_category_id: number | null;
+  hourly_cost: number;
   created_at: string;
 }
 
@@ -403,6 +506,7 @@ export interface Worker {
   status: 'active' | 'inactive' | 'on_leave';
   skill_category: 'SEWING' | 'OTHER'; // Kept for backwards compatibility
   work_category_id: number | null;
+  cost_per_hour: number;
   created_at: string;
 }
 
@@ -470,4 +574,33 @@ export interface AssignmentOutputHistory {
   assignment_id: number;
   output: number;
   recorded_at: string;
+}
+
+export interface ProductBuildVersion {
+  id: number;
+  product_id: number;
+  version_name: string;
+  version_number: number;
+  description: string | null;
+  status: 'draft' | 'active' | 'deprecated';
+  is_default: number; // 0 or 1 (SQLite doesn't have boolean)
+  created_at: string;
+}
+
+export interface BuildVersionStep {
+  id: number;
+  build_version_id: number;
+  product_step_id: number;
+  sequence: number;
+}
+
+export interface BuildVersionMetrics {
+  id: number;
+  build_version_id: number;
+  total_units_produced: number;
+  total_time_seconds: number;
+  avg_time_per_unit_seconds: number | null;
+  total_cost: number;
+  sample_count: number;
+  last_updated: string;
 }

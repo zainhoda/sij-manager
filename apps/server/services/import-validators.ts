@@ -5,6 +5,8 @@
 import type {
   ParsedEquipmentMatrix,
   ParsedProductSteps,
+  ParsedProductionData,
+  ParsedProductionRow,
   ParsedEquipment,
   ParsedWorker,
   ParsedCertification,
@@ -314,6 +316,154 @@ export function validateProductSteps(
         stepsToCreate: stepsWithAction.length,
         dependenciesToCreate: totalDependencies,
         workCategoriesToCreate: workCategoriesToCreate.length,
+      },
+    },
+  };
+}
+
+// Production Data validation types
+export interface ProductionDataExistingData extends ExistingData {
+  orders: Map<number, { id: number; productId: number; productName: string }>;
+  productSteps: Map<number, Map<string, { id: number; name: string }>>; // productId -> stepCode -> step info
+  existingAssignments: Set<string>; // "workerId:stepId:date" keys
+}
+
+export interface ProductionDataValidationResult {
+  valid: boolean;
+  errors: ValidationError[];
+  warnings: ValidationWarning[];
+  preview: {
+    rows: (ParsedProductionRow & {
+      orderId: number;
+      orderProductName: string;
+      workerId: number;
+      productStepId: number;
+    })[];
+    summary: {
+      totalRows: number;
+      ordersAffected: number;
+      workersInvolved: number;
+      stepsInvolved: number;
+      schedulesToCreate: number;
+      entriesToCreate: number;
+      assignmentsToCreate: number;
+    };
+  };
+}
+
+/**
+ * Validate Production Data for import
+ */
+export function validateProductionData(
+  parsed: ParsedProductionData,
+  existing: ProductionDataExistingData
+): ProductionDataValidationResult {
+  const errors: ValidationError[] = [];
+  const warnings: ValidationWarning[] = [];
+
+  const validatedRows: (ParsedProductionRow & {
+    orderId: number;
+    orderProductName: string;
+    workerId: number;
+    productStepId: number;
+  })[] = [];
+
+  // Track unique combinations for summary
+  const uniqueOrderDates = new Set<string>(); // For schedule count estimation
+  const uniqueStepDates = new Set<string>(); // For entry count estimation
+  const uniqueWorkers = new Set<number>();
+  const uniqueSteps = new Set<number>();
+
+  // Check each row
+  for (const row of parsed.rows) {
+    // Validate order exists
+    const order = existing.orders.get(row.orderId);
+    if (!order) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'order_id',
+        message: `Order with ID ${row.orderId} does not exist`,
+      });
+      continue;
+    }
+
+    // Validate step_code exists for this order's product
+    const productSteps = existing.productSteps.get(order.productId);
+    if (!productSteps) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'step_code',
+        message: `Product ${order.productName} (ID: ${order.productId}) has no steps defined`,
+      });
+      continue;
+    }
+
+    const step = productSteps.get(row.stepCode);
+    if (!step) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'step_code',
+        message: `Step code "${row.stepCode}" not found for product "${order.productName}"`,
+      });
+      continue;
+    }
+
+    // Validate worker exists (exact match)
+    const workerId = existing.workers.get(row.workerName);
+    if (!workerId) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'worker_name',
+        message: `Worker "${row.workerName}" not found. Please add this worker to the system first.`,
+      });
+      continue;
+    }
+
+    // Check for duplicates - same worker + step + date
+    const dupKey = `${workerId}:${step.id}:${row.date}`;
+    if (existing.existingAssignments.has(dupKey)) {
+      errors.push({
+        row: row.rowNumber,
+        message: `Duplicate: Worker "${row.workerName}" already has an assignment for step "${row.stepCode}" on ${row.date}`,
+      });
+      continue;
+    }
+
+    // Calculate week start for schedule grouping
+    const date = new Date(row.date);
+    const dayOfWeek = date.getDay();
+    const weekStart = new Date(date);
+    weekStart.setDate(date.getDate() - dayOfWeek);
+    const weekStartStr = weekStart.toISOString().split('T')[0];
+
+    uniqueOrderDates.add(`${row.orderId}:${weekStartStr}`);
+    uniqueStepDates.add(`${row.orderId}:${step.id}:${row.date}`);
+    uniqueWorkers.add(workerId);
+    uniqueSteps.add(step.id);
+
+    validatedRows.push({
+      ...row,
+      orderId: row.orderId,
+      orderProductName: order.productName,
+      workerId,
+      productStepId: step.id,
+    });
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    preview: {
+      rows: validatedRows,
+      summary: {
+        totalRows: validatedRows.length,
+        ordersAffected: parsed.orderIds.size,
+        workersInvolved: uniqueWorkers.size,
+        stepsInvolved: uniqueSteps.size,
+        schedulesToCreate: uniqueOrderDates.size,
+        entriesToCreate: uniqueStepDates.size,
+        assignmentsToCreate: validatedRows.length,
       },
     },
   };

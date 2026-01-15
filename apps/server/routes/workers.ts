@@ -113,6 +113,7 @@ async function handleCreateWorker(request: Request): Promise<Response> {
       employee_id?: string;
       skill_category?: 'SEWING' | 'OTHER';
       work_category_id?: number | null;
+      cost_per_hour?: number;
     };
 
     if (!body.name) {
@@ -147,9 +148,11 @@ async function handleCreateWorker(request: Request): Promise<Response> {
       }
     }
 
+    const costPerHour = body.cost_per_hour !== undefined ? body.cost_per_hour : 0;
+
     const result = await db.execute({
-      sql: "INSERT INTO workers (name, employee_id, skill_category, work_category_id) VALUES (?, ?, ?, ?)",
-      args: [body.name, body.employee_id || null, skillCategory, body.work_category_id ?? null]
+      sql: "INSERT INTO workers (name, employee_id, skill_category, work_category_id, cost_per_hour) VALUES (?, ?, ?, ?, ?)",
+      args: [body.name, body.employee_id || null, skillCategory, body.work_category_id ?? null, costPerHour]
     });
 
     const newWorkerResult = await db.execute({
@@ -177,6 +180,7 @@ async function handleUpdateWorker(request: Request, workerId: number): Promise<R
       status?: string;
       skill_category?: string;
       work_category_id?: number | null;
+      cost_per_hour?: number;
     };
 
     const updates: string[] = [];
@@ -230,6 +234,14 @@ async function handleUpdateWorker(request: Request, workerId: number): Promise<R
       }
       updates.push("work_category_id = ?");
       values.push(body.work_category_id);
+    }
+
+    if (body.cost_per_hour !== undefined) {
+      if (body.cost_per_hour < 0) {
+        return Response.json({ error: "cost_per_hour cannot be negative" }, { status: 400 });
+      }
+      updates.push("cost_per_hour = ?");
+      values.push(body.cost_per_hour);
     }
 
     if (updates.length === 0) {

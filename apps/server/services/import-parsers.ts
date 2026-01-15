@@ -336,3 +336,210 @@ export function parseProductSteps(content: string, format: 'tsv' | 'csv' = 'tsv'
     workCategories,
   };
 }
+
+// Parsed Production Data types
+export interface ParsedProductionRow {
+  orderId: number;
+  stepCode: string;
+  workerName: string;
+  date: string;           // YYYY-MM-DD
+  startTime: string;      // HH:MM or HH:MM:SS
+  endTime: string;        // HH:MM or HH:MM:SS
+  units: number;
+  rowNumber: number;      // For error reporting
+}
+
+export interface ParsedProductionData {
+  rows: ParsedProductionRow[];
+  orderIds: Set<number>;
+  stepCodes: Set<string>;
+  workerNames: Set<string>;
+}
+
+/**
+ * Parse time string to HH:MM:SS format
+ * Accepts: "7:00", "07:00", "7:00:00", "07:00:00"
+ */
+function normalizeTime(timeStr: string): string {
+  const trimmed = timeStr.trim();
+  const parts = trimmed.split(':');
+
+  if (parts.length === 2) {
+    // HH:MM format - add seconds
+    const [h, m] = parts;
+    return `${h!.padStart(2, '0')}:${m!.padStart(2, '0')}:00`;
+  } else if (parts.length === 3) {
+    // HH:MM:SS format
+    const [h, m, s] = parts;
+    return `${h!.padStart(2, '0')}:${m!.padStart(2, '0')}:${s!.padStart(2, '0')}`;
+  }
+
+  return trimmed;
+}
+
+/**
+ * Validate time format
+ */
+function isValidTime(timeStr: string): boolean {
+  const normalized = normalizeTime(timeStr);
+  return /^\d{2}:\d{2}:\d{2}$/.test(normalized);
+}
+
+/**
+ * Validate date format (YYYY-MM-DD)
+ */
+function isValidDate(dateStr: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return false;
+  }
+  const date = new Date(dateStr);
+  return !isNaN(date.getTime());
+}
+
+/**
+ * Parse Production Data spreadsheet
+ *
+ * Expected format:
+ * order_id | step_code | worker_name | date | start_time | end_time | units
+ * 5        | CUT-01    | Maria Garcia | 2025-01-10 | 07:00 | 11:00 | 120
+ */
+export function parseProductionData(content: string, format: 'tsv' | 'csv' = 'csv'): ParsedProductionData {
+  const rows = parseDelimited(content, format);
+
+  if (rows.length < 2) {
+    throw new Error('Production data must have at least a header row and one data row');
+  }
+
+  const headerRow = rows[0]!.map(h => h.toLowerCase().replace(/[_\s-]/g, ''));
+
+  // Find column indices (flexible matching)
+  const findColumn = (keywords: string[]): number => {
+    return headerRow.findIndex(h =>
+      keywords.some(k => h.includes(k))
+    );
+  };
+
+  const orderIdIdx = findColumn(['orderid', 'order']);
+  const stepCodeIdx = findColumn(['stepcode', 'step']);
+  const workerNameIdx = findColumn(['workername', 'worker', 'name']);
+  const dateIdx = findColumn(['date']);
+  const startTimeIdx = findColumn(['starttime', 'start']);
+  const endTimeIdx = findColumn(['endtime', 'end', 'finish']);
+  const unitsIdx = findColumn(['units', 'output', 'quantity', 'pieces']);
+
+  // Validate required columns
+  const missing: string[] = [];
+  if (orderIdIdx === -1) missing.push('order_id');
+  if (stepCodeIdx === -1) missing.push('step_code');
+  if (workerNameIdx === -1) missing.push('worker_name');
+  if (dateIdx === -1) missing.push('date');
+  if (startTimeIdx === -1) missing.push('start_time');
+  if (endTimeIdx === -1) missing.push('end_time');
+  if (unitsIdx === -1) missing.push('units');
+
+  if (missing.length > 0) {
+    throw new Error(`Missing required columns: ${missing.join(', ')}`);
+  }
+
+  const parsedRows: ParsedProductionRow[] = [];
+  const orderIds = new Set<number>();
+  const stepCodes = new Set<string>();
+  const workerNames = new Set<string>();
+
+  // Process data rows
+  for (let rowIdx = 1; rowIdx < rows.length; rowIdx++) {
+    const row = rows[rowIdx];
+    if (!row) continue;
+
+    // Skip empty rows
+    const hasContent = row.some(cell => cell && cell.trim());
+    if (!hasContent) continue;
+
+    const rowNumber = rowIdx + 1; // 1-indexed for user display
+
+    // Parse order_id
+    const orderIdStr = row[orderIdIdx]?.trim();
+    if (!orderIdStr) {
+      throw new Error(`Row ${rowNumber}: Missing order_id`);
+    }
+    const orderId = parseInt(orderIdStr, 10);
+    if (isNaN(orderId)) {
+      throw new Error(`Row ${rowNumber}: Invalid order_id "${orderIdStr}" - must be a number`);
+    }
+
+    // Parse step_code
+    const stepCode = row[stepCodeIdx]?.trim();
+    if (!stepCode) {
+      throw new Error(`Row ${rowNumber}: Missing step_code`);
+    }
+
+    // Parse worker_name
+    const workerName = row[workerNameIdx]?.trim();
+    if (!workerName) {
+      throw new Error(`Row ${rowNumber}: Missing worker_name`);
+    }
+
+    // Parse date
+    const date = row[dateIdx]?.trim();
+    if (!date) {
+      throw new Error(`Row ${rowNumber}: Missing date`);
+    }
+    if (!isValidDate(date)) {
+      throw new Error(`Row ${rowNumber}: Invalid date format "${date}" - expected YYYY-MM-DD`);
+    }
+
+    // Parse start_time
+    const startTime = row[startTimeIdx]?.trim();
+    if (!startTime) {
+      throw new Error(`Row ${rowNumber}: Missing start_time`);
+    }
+    if (!isValidTime(startTime)) {
+      throw new Error(`Row ${rowNumber}: Invalid start_time format "${startTime}" - expected HH:MM or HH:MM:SS`);
+    }
+
+    // Parse end_time
+    const endTime = row[endTimeIdx]?.trim();
+    if (!endTime) {
+      throw new Error(`Row ${rowNumber}: Missing end_time`);
+    }
+    if (!isValidTime(endTime)) {
+      throw new Error(`Row ${rowNumber}: Invalid end_time format "${endTime}" - expected HH:MM or HH:MM:SS`);
+    }
+
+    // Parse units
+    const unitsStr = row[unitsIdx]?.trim();
+    if (!unitsStr) {
+      throw new Error(`Row ${rowNumber}: Missing units`);
+    }
+    const units = parseInt(unitsStr, 10);
+    if (isNaN(units) || units < 0) {
+      throw new Error(`Row ${rowNumber}: Invalid units "${unitsStr}" - must be a non-negative number`);
+    }
+
+    orderIds.add(orderId);
+    stepCodes.add(stepCode);
+    workerNames.add(workerName);
+
+    parsedRows.push({
+      orderId,
+      stepCode,
+      workerName,
+      date,
+      startTime: normalizeTime(startTime),
+      endTime: normalizeTime(endTime),
+      units,
+      rowNumber,
+    });
+  }
+
+  if (parsedRows.length === 0) {
+    throw new Error('No valid data rows found');
+  }
+
+  return {
+    rows: parsedRows,
+    orderIds,
+    stepCodes,
+    workerNames,
+  };
+}

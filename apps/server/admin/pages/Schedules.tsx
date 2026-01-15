@@ -16,6 +16,9 @@ interface ScheduleListItem {
     id: number;
     status: string;
   }>;
+  estimatedCost: number;
+  actualCost: number;
+  costVariance: number;
 }
 
 export default function Schedules() {
@@ -168,6 +171,24 @@ export default function Schedules() {
             </span>
           </div>
         );
+      },
+    },
+    {
+      key: "estimatedCost",
+      header: "Est. Cost",
+      width: 100,
+      editable: false,
+      render: (value) => `$${Number(value || 0).toFixed(2)}`,
+    },
+    {
+      key: "actualCost",
+      header: "Actual Cost",
+      width: 100,
+      editable: false,
+      render: (value, row) => {
+        const progress = getProgress(row.entries);
+        if (progress.completed === 0) return "-";
+        return `$${Number(value || 0).toFixed(2)}`;
       },
     },
     {

@@ -6,22 +6,27 @@ import { db } from "../db";
 import {
   parseEquipmentMatrix,
   parseProductSteps,
+  parseProductionData,
   type ParsedEquipmentMatrix,
   type ParsedProductSteps,
+  type ParsedProductionData,
 } from "../services/import-parsers";
 import {
   validateEquipmentMatrix,
   validateProductSteps,
+  validateProductionData,
   type ExistingData,
   type EquipmentMatrixValidationResult,
   type ProductStepsValidationResult,
+  type ProductionDataExistingData,
+  type ProductionDataValidationResult,
 } from "../services/import-validators";
 
 // Preview token storage (in-memory with TTL)
 interface PreviewData {
-  type: 'equipment-matrix' | 'product-steps';
-  data: ParsedEquipmentMatrix | ParsedProductSteps;
-  validation: EquipmentMatrixValidationResult | ProductStepsValidationResult;
+  type: 'equipment-matrix' | 'product-steps' | 'production-data';
+  data: ParsedEquipmentMatrix | ParsedProductSteps | ParsedProductionData;
+  validation: EquipmentMatrixValidationResult | ProductStepsValidationResult | ProductionDataValidationResult;
   productId?: number;
   productName?: string;
   createdAt: number;
@@ -255,6 +260,155 @@ async function executeProductStepsImport(
   return { workCategoriesCreated, componentsCreated, stepsCreated, dependenciesCreated };
 }
 
+/**
+ * Get existing data for production data validation
+ */
+async function getProductionDataExistingData(): Promise<ProductionDataExistingData> {
+  const existing = await getExistingData();
+
+  // Get orders with product info
+  const ordersResult = await db.execute(`
+    SELECT o.id, o.product_id, p.name as product_name
+    FROM orders o
+    JOIN products p ON o.product_id = p.id
+  `);
+
+  const orders = new Map<number, { id: number; productId: number; productName: string }>();
+  for (const row of ordersResult.rows) {
+    orders.set(row.id as number, {
+      id: row.id as number,
+      productId: row.product_id as number,
+      productName: row.product_name as string,
+    });
+  }
+
+  // Get product steps indexed by product_id and step_code
+  const stepsResult = await db.execute(`
+    SELECT id, product_id, step_code, name
+    FROM product_steps
+    WHERE step_code IS NOT NULL
+  `);
+
+  const productSteps = new Map<number, Map<string, { id: number; name: string }>>();
+  for (const row of stepsResult.rows) {
+    const productId = row.product_id as number;
+    const stepCode = row.step_code as string;
+
+    if (!productSteps.has(productId)) {
+      productSteps.set(productId, new Map());
+    }
+    productSteps.get(productId)!.set(stepCode, {
+      id: row.id as number,
+      name: row.name as string,
+    });
+  }
+
+  // Get existing assignments for duplicate detection
+  const assignmentsResult = await db.execute(`
+    SELECT twa.worker_id, se.product_step_id, se.date
+    FROM task_worker_assignments twa
+    JOIN schedule_entries se ON twa.schedule_entry_id = se.id
+  `);
+
+  const existingAssignments = new Set<string>();
+  for (const row of assignmentsResult.rows) {
+    const key = `${row.worker_id}:${row.product_step_id}:${row.date}`;
+    existingAssignments.add(key);
+  }
+
+  return {
+    ...existing,
+    orders,
+    productSteps,
+    existingAssignments,
+  };
+}
+
+/**
+ * Execute Production Data import
+ */
+async function executeProductionDataImport(
+  validation: ProductionDataValidationResult
+): Promise<{ schedulesCreated: number; entriesCreated: number; assignmentsCreated: number }> {
+  let schedulesCreated = 0;
+  let entriesCreated = 0;
+  let assignmentsCreated = 0;
+
+  // Track created schedules and entries to avoid duplicates
+  const scheduleCache = new Map<string, number>(); // "orderId:weekStart" -> schedule_id
+  const entryCache = new Map<string, number>(); // "scheduleId:stepId:date" -> entry_id
+
+  // First, fetch existing schedules
+  const existingSchedulesResult = await db.execute(`
+    SELECT id, order_id, week_start_date FROM schedules
+  `);
+  for (const row of existingSchedulesResult.rows) {
+    const key = `${row.order_id}:${row.week_start_date}`;
+    scheduleCache.set(key, row.id as number);
+  }
+
+  // Fetch existing schedule entries
+  const existingEntriesResult = await db.execute(`
+    SELECT id, schedule_id, product_step_id, date FROM schedule_entries
+  `);
+  for (const row of existingEntriesResult.rows) {
+    const key = `${row.schedule_id}:${row.product_step_id}:${row.date}`;
+    entryCache.set(key, row.id as number);
+  }
+
+  for (const row of validation.preview.rows) {
+    // Calculate week start date
+    const date = new Date(row.date);
+    const dayOfWeek = date.getDay();
+    const weekStart = new Date(date);
+    weekStart.setDate(date.getDate() - dayOfWeek);
+    const weekStartStr = weekStart.toISOString().split('T')[0];
+
+    // Get or create schedule
+    const scheduleKey = `${row.orderId}:${weekStartStr}`;
+    let scheduleId = scheduleCache.get(scheduleKey);
+
+    if (!scheduleId) {
+      const scheduleResult = await db.execute({
+        sql: "INSERT INTO schedules (order_id, week_start_date) VALUES (?, ?)",
+        args: [row.orderId, weekStartStr],
+      });
+      scheduleId = Number(scheduleResult.lastInsertRowid);
+      scheduleCache.set(scheduleKey, scheduleId);
+      schedulesCreated++;
+    }
+
+    // Get or create schedule entry
+    const entryKey = `${scheduleId}:${row.productStepId}:${row.date}`;
+    let entryId = entryCache.get(entryKey);
+
+    if (!entryId) {
+      const entryResult = await db.execute({
+        sql: "INSERT INTO schedule_entries (schedule_id, product_step_id, date, status) VALUES (?, ?, ?, 'completed')",
+        args: [scheduleId, row.productStepId, row.date],
+      });
+      entryId = Number(entryResult.lastInsertRowid);
+      entryCache.set(entryKey, entryId);
+      entriesCreated++;
+    }
+
+    // Create task worker assignment
+    // Convert date + time to ISO datetime string
+    const startDateTime = `${row.date}T${row.startTime}`;
+    const endDateTime = `${row.date}T${row.endTime}`;
+
+    await db.execute({
+      sql: `INSERT INTO task_worker_assignments
+            (schedule_entry_id, worker_id, actual_start_time, actual_end_time, actual_output, status)
+            VALUES (?, ?, ?, ?, ?, 'completed')`,
+      args: [entryId, row.workerId, startDateTime, endDateTime, row.units],
+    });
+    assignmentsCreated++;
+  }
+
+  return { schedulesCreated, entriesCreated, assignmentsCreated };
+}
+
 export async function handleImports(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
 
@@ -451,6 +605,83 @@ export async function handleImports(request: Request): Promise<Response | null> 
         success: true,
         productId,
         productCreated,
+        result,
+      });
+    } catch (error) {
+      return Response.json({ error: (error as Error).message }, { status: 500 });
+    }
+  }
+
+  // POST /api/imports/production-data/preview
+  if (url.pathname === "/api/imports/production-data/preview" && request.method === "POST") {
+    try {
+      const body = await request.json() as { content: string; format?: 'tsv' | 'csv' };
+
+      if (!body.content) {
+        return Response.json({ error: "Missing required field: content" }, { status: 400 });
+      }
+
+      const format = body.format || 'csv';
+      const parsed = parseProductionData(body.content, format);
+      const existing = await getProductionDataExistingData();
+      const validation = validateProductionData(parsed, existing);
+
+      const token = generateToken();
+      previewStore.set(token, {
+        type: 'production-data',
+        data: parsed,
+        validation,
+        createdAt: Date.now(),
+      });
+
+      return Response.json({
+        success: true,
+        preview: validation.preview,
+        errors: validation.errors,
+        warnings: validation.warnings,
+        importToken: token,
+      });
+    } catch (error) {
+      return Response.json({ error: (error as Error).message }, { status: 400 });
+    }
+  }
+
+  // POST /api/imports/production-data/confirm
+  if (url.pathname === "/api/imports/production-data/confirm" && request.method === "POST") {
+    try {
+      const body = await request.json() as { importToken: string };
+
+      if (!body.importToken) {
+        return Response.json({ error: "Missing required field: importToken" }, { status: 400 });
+      }
+
+      const previewData = previewStore.get(body.importToken);
+      if (!previewData) {
+        return Response.json({ error: "Import session not found or expired" }, { status: 404 });
+      }
+
+      if (previewData.type !== 'production-data') {
+        return Response.json({ error: "Invalid import token type" }, { status: 400 });
+      }
+
+      // Check if validation passed
+      if (!previewData.validation.valid) {
+        return Response.json({
+          error: "Cannot import: validation errors exist",
+          errors: previewData.validation.errors,
+        }, { status: 400 });
+      }
+
+      // Execute import
+      const result = await executeProductionDataImport(
+        previewData.validation as ProductionDataValidationResult
+      );
+
+      // Remove the token
+      previewStore.delete(body.importToken);
+
+      return Response.json({
+        success: true,
         result,
       });
     } catch (error) {

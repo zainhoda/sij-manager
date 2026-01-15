@@ -717,3 +717,173 @@ export async function getWorkerAssignmentAnalytics(workerId: number): Promise<As
   
   return results;
 }
+
+// Build Version Analytics
+export interface BuildVersionMetricsSummary {
+  buildVersionId: number;
+  versionName: string;
+  productName: string;
+  totalUnitsProduced: number;
+  totalTimeSeconds: number;
+  avgTimePerUnitSeconds: number | null;
+  totalCost: number;
+  sampleCount: number;
+  orderCount: number;
+}
+
+// Get metrics for a build version
+export async function getBuildVersionMetrics(buildVersionId: number): Promise<BuildVersionMetricsSummary | null> {
+  // Get build version info
+  const versionResult = await db.execute({
+    sql: `
+    SELECT bv.id, bv.version_name, p.name as product_name
+    FROM product_build_versions bv
+    JOIN products p ON bv.product_id = p.id
+    WHERE bv.id = ?
+  `,
+    args: [buildVersionId]
+  });
+  const version = versionResult.rows[0] as unknown as {
+    id: number;
+    version_name: string;
+    product_name: string;
+  } | undefined;
+
+  if (!version) return null;
+
+  // Get orders using this build version
+  const ordersResult = await db.execute({
+    sql: `
+    SELECT o.id, o.quantity
+    FROM orders o
+    WHERE o.build_version_id = ?
+  `,
+    args: [buildVersionId]
+  });
+  const orders = ordersResult.rows as unknown as { id: number; quantity: number }[];
+
+  // Calculate total units produced from completed schedule entries
+  const metricsResult = await db.execute({
+    sql: `
+    SELECT
+      SUM(twa.actual_output) as total_units,
+      COUNT(DISTINCT se.id) as sample_count
+    FROM orders o
+    JOIN schedules s ON s.order_id = o.id
+    JOIN schedule_entries se ON se.schedule_id = s.id
+    JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
+    WHERE o.build_version_id = ?
+    AND twa.status = 'completed'
+  `,
+    args: [buildVersionId]
+  });
+  const metrics = metricsResult.rows[0] as unknown as {
+    total_units: number | null;
+    sample_count: number;
+  };
+
+  // Calculate total time from actual work times
+  const timeResult = await db.execute({
+    sql: `
+    SELECT
+      SUM(
+        CASE
+          WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
+          THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 86400
+          ELSE 0
+        END
+      ) as total_seconds
+    FROM orders o
+    JOIN schedules s ON s.order_id = o.id
+    JOIN schedule_entries se ON se.schedule_id = s.id
+    JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
+    WHERE o.build_version_id = ?
+    AND twa.status = 'completed'
+  `,
+    args: [buildVersionId]
+  });
+  const timeMetrics = timeResult.rows[0] as unknown as { total_seconds: number | null };
+
+  const totalUnits = metrics.total_units || 0;
+  const totalSeconds = Math.round(timeMetrics.total_seconds || 0);
+  const avgTimePerUnit = totalUnits > 0 ? totalSeconds / totalUnits : null;
+
+  return {
+    buildVersionId: version.id,
+    versionName: version.version_name,
+    productName: version.product_name,
+    totalUnitsProduced: totalUnits,
+    totalTimeSeconds: totalSeconds,
+    avgTimePerUnitSeconds: avgTimePerUnit ? Math.round(avgTimePerUnit * 10) / 10 : null,
+    totalCost: 0, // TODO: Calculate from cost data
+    sampleCount: metrics.sample_count || 0,
+    orderCount: orders.length,
+  };
+}
+
+// Compare metrics between build versions
+export async function compareBuildVersionMetrics(
+  versionIds: number[]
+): Promise<BuildVersionMetricsSummary[]> {
+  const results: BuildVersionMetricsSummary[] = [];
+
+  for (const versionId of versionIds) {
+    const metrics = await getBuildVersionMetrics(versionId);
+    if (metrics) {
+      results.push(metrics);
+    }
+  }
+
+  return results;
+}
+
+// Update aggregated metrics in build_version_metrics table
+export async function updateBuildVersionAggregatedMetrics(buildVersionId: number): Promise<void> {
+  const metrics = await getBuildVersionMetrics(buildVersionId);
+  if (!metrics) return;
+
+  // Check if record exists
+  const existingResult = await db.execute({
+    sql: "SELECT id FROM build_version_metrics WHERE build_version_id = ?",
+    args: [buildVersionId]
+  });
+
+  if (existingResult.rows.length > 0) {
+    await db.execute({
+      sql: `
+      UPDATE build_version_metrics
+      SET total_units_produced = ?,
+          total_time_seconds = ?,
+          avg_time_per_unit_seconds = ?,
+          total_cost = ?,
+          sample_count = ?,
+          last_updated = CURRENT_TIMESTAMP
+      WHERE build_version_id = ?
+    `,
+      args: [
+        metrics.totalUnitsProduced,
+        metrics.totalTimeSeconds,
+        metrics.avgTimePerUnitSeconds,
+        metrics.totalCost,
+        metrics.sampleCount,
+        buildVersionId,
+      ]
+    });
+  } else {
+    await db.execute({
+      sql: `
+      INSERT INTO build_version_metrics
+        (build_version_id, total_units_produced, total_time_seconds, avg_time_per_unit_seconds, total_cost, sample_count)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `,
+      args: [
+        buildVersionId,
+        metrics.totalUnitsProduced,
+        metrics.totalTimeSeconds,
+        metrics.avgTimePerUnitSeconds,
+        metrics.totalCost,
+        metrics.sampleCount,
+      ]
+    });
+  }
+}

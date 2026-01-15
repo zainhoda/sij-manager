@@ -64,7 +64,7 @@ export async function handleEquipment(request: Request): Promise<Response | null
 
 async function handleCreateEquipment(request: Request): Promise<Response> {
   try {
-    const body = await request.json() as { name: string; description?: string };
+    const body = await request.json() as { name: string; description?: string; hourly_cost?: number };
 
     if (!body.name) {
       return Response.json({ error: "Missing required field: name" }, { status: 400 });
@@ -79,9 +79,11 @@ async function handleCreateEquipment(request: Request): Promise<Response> {
       return Response.json({ error: "Equipment with this name already exists" }, { status: 409 });
     }
 
+    const hourlyCost = body.hourly_cost !== undefined ? body.hourly_cost : 0;
+
     const result = await db.execute({
-      sql: "INSERT INTO equipment (name, description) VALUES (?, ?)",
-      args: [body.name, body.description || null]
+      sql: "INSERT INTO equipment (name, description, hourly_cost) VALUES (?, ?, ?)",
+      args: [body.name, body.description || null, hourlyCost]
     });
 
     const newEquipmentResult = await db.execute({
@@ -97,7 +99,7 @@ async function handleCreateEquipment(request: Request): Promise<Response> {
 
 async function handleUpdateEquipment(request: Request, equipmentId: number): Promise<Response> {
   try {
-    const body = await request.json() as { name?: string; description?: string; status?: string };
+    const body = await request.json() as { name?: string; description?: string; status?: string; hourly_cost?: number };
 
     const updates: string[] = [];
     const values: any[] = [];
@@ -126,6 +128,14 @@ async function handleUpdateEquipment(request: Request, equipmentId: number): Pro
       }
       updates.push("status = ?");
       values.push(body.status);
+    }
+
+    if (body.hourly_cost !== undefined) {
+      if (body.hourly_cost < 0) {
+        return Response.json({ error: "hourly_cost cannot be negative" }, { status: 400 });
+      }
+      updates.push("hourly_cost = ?");
+      values.push(body.hourly_cost);
     }
 
     if (updates.length === 0) {

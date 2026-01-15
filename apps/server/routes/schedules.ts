@@ -2,6 +2,7 @@ import { db } from "../db";
 import type { Schedule, ScheduleEntry } from "../db/schema";
 import { generateSchedule, getScheduleWithEntries } from "../services/scheduler";
 import { generateReplanDraft, commitReplan, type CommitReplanRequest } from "../services/replan";
+import { getScheduleCostSummary, calculateEstimatedEntryCost, calculateActualEntryCost } from "../services/cost-calculator";
 
 export async function handleSchedules(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
@@ -52,10 +53,16 @@ export async function handleSchedules(request: Request): Promise<Response | null
         entriesByDate[entry.date]!.push(entry);
       }
 
+      // Get cost summary for this schedule
+      const costSummary = await getScheduleCostSummary(schedule.id);
+
       return {
         ...schedule,
         entries,
         entriesByDate,
+        estimatedCost: costSummary?.estimatedTotalCost ?? 0,
+        actualCost: costSummary?.actualTotalCost ?? 0,
+        costVariance: costSummary?.variance ?? 0,
       };
     }));
 
@@ -67,6 +74,17 @@ export async function handleSchedules(request: Request): Promise<Response | null
     return handleGenerateSchedule(request);
   }
 
+  // GET /api/schedules/:id/costs - get detailed cost breakdown
+  const costsMatch = url.pathname.match(/^\/api\/schedules\/(\d+)\/costs$/);
+  if (costsMatch && request.method === "GET") {
+    const scheduleId = parseInt(costsMatch[1]!);
+    const costSummary = await getScheduleCostSummary(scheduleId);
+    if (!costSummary) {
+      return Response.json({ error: "Schedule not found" }, { status: 404 });
+    }
+    return Response.json(costSummary);
+  }
+
   // GET /api/schedules/:id - get schedule with entries
   const scheduleMatch = url.pathname.match(/^\/api\/schedules\/(\d+)$/);
   if (scheduleMatch && request.method === "GET") {
@@ -75,7 +93,23 @@ export async function handleSchedules(request: Request): Promise<Response | null
     if (!schedule) {
       return Response.json({ error: "Schedule not found" }, { status: 404 });
     }
-    return Response.json(schedule);
+
+    // Add cost summary to schedule response
+    const costSummary = await getScheduleCostSummary(scheduleId);
+
+    return Response.json({
+      ...schedule,
+      costSummary: costSummary ? {
+        estimatedLaborCost: costSummary.estimatedLaborCost,
+        estimatedEquipmentCost: costSummary.estimatedEquipmentCost,
+        estimatedTotalCost: costSummary.estimatedTotalCost,
+        actualLaborCost: costSummary.actualLaborCost,
+        actualEquipmentCost: costSummary.actualEquipmentCost,
+        actualTotalCost: costSummary.actualTotalCost,
+        variance: costSummary.variance,
+        variancePercentage: costSummary.variancePercentage,
+      } : null,
+    });
   }
 
   // DELETE /api/schedules/:id - delete schedule

@@ -30,6 +30,17 @@ interface ScheduleEntry {
   worker_name: string | null;
 }
 
+interface CostSummary {
+  estimatedLaborCost: number;
+  estimatedEquipmentCost: number;
+  estimatedTotalCost: number;
+  actualLaborCost: number;
+  actualEquipmentCost: number;
+  actualTotalCost: number;
+  variance: number;
+  variancePercentage: number;
+}
+
 interface ScheduleDetail {
   id: number;
   order_id: number;
@@ -38,6 +49,7 @@ interface ScheduleDetail {
   order_color: string | null;
   entries: ScheduleEntry[];
   entriesByDate: Record<string, ScheduleEntry[]>;
+  costSummary: CostSummary | null;
 }
 
 interface OrderInfo {
@@ -314,6 +326,28 @@ export default function ScheduleDetailPage() {
             across {Object.keys(schedule.entriesByDate).length} days
           </div>
         </div>
+
+        {schedule.costSummary && (
+          <div style={{ padding: 16, backgroundColor: "#f8fafc", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+            <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>Cost</div>
+            <div style={{ fontSize: 24, fontWeight: 600 }}>
+              ${schedule.costSummary.actualTotalCost > 0
+                ? schedule.costSummary.actualTotalCost.toFixed(2)
+                : schedule.costSummary.estimatedTotalCost.toFixed(2)}
+            </div>
+            <div style={{ fontSize: 12, color: "#64748b", marginTop: 8 }}>
+              Est: ${schedule.costSummary.estimatedTotalCost.toFixed(2)}
+              {schedule.costSummary.actualTotalCost > 0 && (
+                <span style={{
+                  marginLeft: 8,
+                  color: schedule.costSummary.variance >= 0 ? "#22c55e" : "#dc2626"
+                }}>
+                  ({schedule.costSummary.variance >= 0 ? "-" : "+"}${Math.abs(schedule.costSummary.variance).toFixed(2)})
+                </span>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Entries Table */}

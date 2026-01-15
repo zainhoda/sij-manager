@@ -10,6 +10,8 @@ import { handleAnalytics } from "./routes/analytics";
 import { handleScheduling } from "./routes/scheduling";
 import { handleImports } from "./routes/imports";
 import { handleWorkCategories } from "./routes/work-categories";
+import { handleBuildVersions } from "./routes/build-versions";
+import { handleProductionSummary } from "./routes/production-summary";
 
 // Admin frontend
 import adminHtml from "./admin/index.html";
@@ -133,6 +135,16 @@ const server = Bun.serve({
       }
 
       response = await handleWorkCategories(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
+
+      response = await handleBuildVersions(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
+
+      response = await handleProductionSummary(request);
       if (response) {
         return addCorsHeaders(response);
       }

@@ -1,6 +1,7 @@
 import { db } from "../db";
 import type { Order, ProductStep, Schedule, ScheduleEntry, Worker, TaskWorkerAssignment } from "../db/schema";
 import { getWorkerProficiencyLevel, PROFICIENCY_MULTIPLIERS } from "../routes/proficiencies";
+import { getBuildVersionSteps, getDefaultBuildVersion } from "./build-version-manager";
 
 // Work day configuration
 export const WORK_DAY = {
@@ -332,16 +333,40 @@ export async function generateSchedule(orderId: number): Promise<Schedule | null
   const today = new Date();
   const daysUntilDeadline = Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 
-  // Get product steps with dependencies
-  const stepsResult = await db.execute({
-    sql: `
-    SELECT * FROM product_steps
-    WHERE product_id = ?
-    ORDER BY sequence
-  `,
-    args: [order.product_id]
-  });
-  const steps = stepsResult.rows as unknown as ProductStep[];
+  // Get steps from build version (or default build version, or fall back to all product steps)
+  let steps: ProductStep[];
+  let buildVersionId = order.build_version_id;
+
+  if (buildVersionId) {
+    // Use the order's specified build version
+    const buildVersionSteps = await getBuildVersionSteps(buildVersionId);
+    steps = buildVersionSteps.map(s => ({ ...s, sequence: s.build_sequence }));
+  } else {
+    // Try to get the default build version
+    const defaultVersion = await getDefaultBuildVersion(order.product_id);
+    if (defaultVersion) {
+      buildVersionId = defaultVersion.id;
+      const buildVersionSteps = await getBuildVersionSteps(defaultVersion.id);
+      steps = buildVersionSteps.map(s => ({ ...s, sequence: s.build_sequence }));
+
+      // Update the order with the default build version for tracking
+      await db.execute({
+        sql: "UPDATE orders SET build_version_id = ? WHERE id = ?",
+        args: [defaultVersion.id, orderId]
+      });
+    } else {
+      // Fall back to all product steps (legacy behavior)
+      const stepsResult = await db.execute({
+        sql: `
+        SELECT * FROM product_steps
+        WHERE product_id = ?
+        ORDER BY sequence
+      `,
+        args: [order.product_id]
+      });
+      steps = stepsResult.rows as unknown as ProductStep[];
+    }
+  }
 
   // Build steps map with dependencies
   const stepsMap = new Map<number, StepWithDependencies>();

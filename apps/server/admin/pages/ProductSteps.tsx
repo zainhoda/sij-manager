@@ -15,7 +15,8 @@ import Dagre from "@dagrejs/dagre";
 import "@xyflow/react/dist/style.css";
 import DataGrid, { Column, CellChangeContext } from "../components/DataGrid";
 import MultiSelect from "../components/MultiSelect";
-import { Trash2, Plus } from "lucide-react";
+import { Trash2, Plus, GitBranch } from "lucide-react";
+import { Link } from "wouter";
 
 interface DependencyDetail {
   stepId: number;
@@ -1092,13 +1093,22 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
             {steps.length} steps • Dependencies shown as animated edges
           </p>
         </div>
-        <button
-          className="btn btn-secondary"
-          onClick={() => setShowUploadModal(true)}
-          style={{ display: "flex", alignItems: "center", gap: "8px" }}
-        >
-          Upload Steps
-        </button>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <Link
+            href={`/products/${productId}/build-versions`}
+            className="btn btn-secondary"
+            style={{ display: "flex", alignItems: "center", gap: "8px", textDecoration: "none" }}
+          >
+            <GitBranch size={16} /> Build Versions
+          </Link>
+          <button
+            className="btn btn-secondary"
+            onClick={() => setShowUploadModal(true)}
+            style={{ display: "flex", alignItems: "center", gap: "8px" }}
+          >
+            Upload Steps
+          </button>
+        </div>
       </div>
       <div style={{ width: "100%", height: "400px", border: "1px solid #e2e8f0", borderRadius: "8px" }}>
         <ReactFlow
