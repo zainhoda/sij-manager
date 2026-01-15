@@ -102,10 +102,14 @@ interface OrderSummary {
   unitsComplete: number;
   unitsInProgress: number;
   unitsNotStarted: number;
-  progressPercent: number;
+  // Progress vs Ideal
+  progressPercentIdeal: number;
+  estimatedHoursRemainingIdeal: number;
+  // Progress vs Actual Efficiency
+  progressPercentActual: number;
+  estimatedHoursRemainingActual: number;
   tasksCompleted: number;
   totalHours: number;
-  estimatedHoursRemaining: number;
   laborCost: number;
   equipmentCost: number;
   totalCost: number;
@@ -570,9 +574,9 @@ export default function ProductionSummary() {
       },
     },
     {
-      key: "progressPercent",
-      header: "Progress",
-      width: 120,
+      key: "progressPercentIdeal",
+      header: "vs. Ideal",
+      width: 130,
       editable: false,
       render: (value, row) => {
         const percent = Math.min(Number(value), 100);
@@ -589,7 +593,33 @@ export default function ProductionSummary() {
               />
             </div>
             <div style={{ fontSize: 11, color: isOver ? "#dc2626" : "#64748b" }}>
-              {row.totalHours.toFixed(1)}h / {(row.totalHours + row.estimatedHoursRemaining).toFixed(1)}h ({value}%)
+              {row.totalHours.toFixed(1)}h / {(row.totalHours + row.estimatedHoursRemainingIdeal).toFixed(1)}h ({value}%)
+            </div>
+          </div>
+        );
+      },
+    },
+    {
+      key: "progressPercentActual",
+      header: "vs. Act. Eff.",
+      width: 130,
+      editable: false,
+      render: (value, row) => {
+        const percent = Math.min(Number(value), 100);
+        const isOver = Number(value) > 100;
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ height: 8, backgroundColor: "#e2e8f0", borderRadius: 4, overflow: "hidden" }}>
+              <div
+                style={{
+                  width: `${percent}%`,
+                  height: "100%",
+                  backgroundColor: isOver ? "#dc2626" : "#8b5cf6",
+                }}
+              />
+            </div>
+            <div style={{ fontSize: 11, color: isOver ? "#dc2626" : "#64748b" }}>
+              {row.totalHours.toFixed(1)}h / {(row.totalHours + row.estimatedHoursRemainingActual).toFixed(1)}h ({value}%)
             </div>
           </div>
         );
@@ -1011,12 +1041,35 @@ export default function ProductionSummary() {
           )}
 
           {viewMode === "order" && orderData && (
-            <DataGrid
-              data={orderData.orders.map((o) => ({ ...o, id: o.orderId }))}
-              columns={orderColumns}
-              searchPlaceholder="Search orders..."
-              height="calc(100vh - 300px)"
-            />
+            <>
+              <DataGrid
+                data={orderData.orders.map((o) => ({ ...o, id: o.orderId }))}
+                columns={orderColumns}
+                searchPlaceholder="Search orders..."
+                height="calc(100vh - 380px)"
+              />
+              <div style={{ marginTop: 16, padding: 16, backgroundColor: "#f8fafc", borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>Progress Calculations</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                  <div>
+                    <div style={{ color: "#3b82f6", fontWeight: 500, marginBottom: 4 }}>vs. Ideal</div>
+                    <div style={{ color: "#64748b" }}>
+                      Based on <code style={{ backgroundColor: "#e2e8f0", padding: "1px 4px", borderRadius: 3 }}>time_per_piece_seconds</code> from product definitions.
+                      <br />
+                      <span style={{ fontSize: 12 }}>Formula: hours_worked ÷ (sum of ideal time per piece × quantity)</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ color: "#8b5cf6", fontWeight: 500, marginBottom: 4 }}>vs. Actual Efficiency</div>
+                    <div style={{ color: "#64748b" }}>
+                      Based on observed pace from production data.
+                      <br />
+                      <span style={{ fontSize: 12 }}>Formula: hours_worked ÷ (step_completions_needed × actual_hours_per_step)</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>
           )}
 
           {viewMode === "step" && stepData && (

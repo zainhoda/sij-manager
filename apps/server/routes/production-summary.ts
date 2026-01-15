@@ -33,10 +33,14 @@ interface OrderSummary {
   unitsComplete: number;
   unitsInProgress: number;
   unitsNotStarted: number;
-  progressPercent: number;
+  // Progress vs Ideal (based on time_per_piece_seconds from product definitions)
+  progressPercentIdeal: number;
+  estimatedHoursRemainingIdeal: number;
+  // Progress vs Actual Efficiency (based on observed pace)
+  progressPercentActual: number;
+  estimatedHoursRemainingActual: number;
   tasksCompleted: number;
   totalHours: number;
-  estimatedHoursRemaining: number;
   laborCost: number;
   equipmentCost: number;
   totalCost: number;
@@ -247,7 +251,7 @@ async function getOverallSummary(filters: Filters): Promise<Response> {
   }
 
   // Build daily breakdown
-  const dailyBreakdown: DailyBreakdown[] = (dailyResult.rows as unknown as {
+  const dailyBreakdownWithExpected = (dailyResult.rows as unknown as {
     date: string;
     units_produced: number;
     tasks_completed: number;
@@ -266,27 +270,31 @@ async function getOverallSummary(filters: Filters): Promise<Response> {
     cost: Math.round((row.labor_cost + row.equipment_cost) * 100) / 100,
     plannedUnits: 0, // Deprecated - keeping for interface compatibility
     // Efficiency = expected_time / actual_time * 100 (higher = faster than expected)
-    efficiency: row.hours_worked > 0 ? Math.round((row.expected_hours / row.hours_worked) * 100) : 0
+    efficiency: row.hours_worked > 0 ? Math.round((row.expected_hours / row.hours_worked) * 100) : 0,
+    expectedHours: row.expected_hours // Keep for totals calculation
   }));
 
   // Calculate totals
-  const totals = dailyBreakdown.reduce((acc, day) => ({
+  const totals = dailyBreakdownWithExpected.reduce((acc, day) => ({
     totalUnits: acc.totalUnits + day.units,
     tasksCompleted: acc.tasksCompleted + day.tasks,
     totalHoursWorked: acc.totalHoursWorked + day.hours,
+    totalExpectedHours: acc.totalExpectedHours + day.expectedHours,
     laborCost: acc.laborCost + day.laborCost,
     equipmentCost: acc.equipmentCost + day.equipmentCost,
-    totalCost: acc.totalCost + day.cost,
-    plannedUnits: acc.plannedUnits + day.plannedUnits
+    totalCost: acc.totalCost + day.cost
   }), {
     totalUnits: 0,
     tasksCompleted: 0,
     totalHoursWorked: 0,
+    totalExpectedHours: 0,
     laborCost: 0,
     equipmentCost: 0,
-    totalCost: 0,
-    plannedUnits: 0
+    totalCost: 0
   });
+
+  // Strip expectedHours from response (internal use only)
+  const dailyBreakdown: DailyBreakdown[] = dailyBreakdownWithExpected.map(({ expectedHours, ...day }) => day);
 
   // Get unique workers for period
   const allWorkers = [...new Set(dailyBreakdown.flatMap(d => d.workers))];
@@ -301,7 +309,7 @@ async function getOverallSummary(filters: Filters): Promise<Response> {
       laborCost: Math.round(totals.laborCost * 100) / 100,
       equipmentCost: Math.round(totals.equipmentCost * 100) / 100,
       totalCost: Math.round(totals.totalCost * 100) / 100,
-      avgEfficiency: totals.plannedUnits > 0 ? Math.round((totals.totalUnits / totals.plannedUnits) * 100) : 0
+      avgEfficiency: totals.totalHoursWorked > 0 ? Math.round((totals.totalExpectedHours / totals.totalHoursWorked) * 100) : 0
     },
     dailyBreakdown
   });
@@ -548,7 +556,7 @@ async function getOrderSummary(filters: Filters): Promise<Response> {
     GROUP BY o.id, s.build_version_id
   `);
 
-  const orderMeta = new Map<number, { lastSeq: number; totalEstimatedHours: number }>();
+  const orderMeta = new Map<number, { lastSeq: number; totalEstimatedHours: number; numSteps: number }>();
   for (const row of stepsResult.rows as unknown as {
     order_id: number;
     order_quantity: number;
@@ -557,9 +565,11 @@ async function getOrderSummary(filters: Filters): Promise<Response> {
   }[]) {
     // Total estimated = (sum of all step times per unit) × quantity, converted to hours
     const totalEstimatedHours = (row.total_time_per_unit_seconds * row.order_quantity) / 3600;
+    // Count number of steps (last_step_seq is the max sequence, which equals step count for 1-indexed sequences)
     orderMeta.set(row.order_id, {
       lastSeq: row.last_step_seq,
-      totalEstimatedHours
+      totalEstimatedHours,
+      numSteps: row.last_step_seq
     });
   }
 
@@ -613,6 +623,7 @@ async function getOrderSummary(filters: Filters): Promise<Response> {
     productName: string;
     orderQuantity: number;
     stepOutputs: Map<number, number>; // sequence -> output
+    totalStepCompletions: number; // sum of all step outputs
     tasksCompleted: number;
     totalHours: number;
     laborCost: number;
@@ -635,6 +646,7 @@ async function getOrderSummary(filters: Filters): Promise<Response> {
         productName: row.product_name,
         orderQuantity: row.order_quantity,
         stepOutputs: new Map(),
+        totalStepCompletions: 0,
         tasksCompleted: 0,
         totalHours: 0,
         laborCost: 0,
@@ -643,6 +655,7 @@ async function getOrderSummary(filters: Filters): Promise<Response> {
     }
     const order = orderMap.get(row.order_id)!;
     order.stepOutputs.set(row.step_sequence, row.step_output);
+    order.totalStepCompletions += row.step_output;
     order.tasksCompleted += row.tasks_completed;
     order.totalHours += row.total_hours;
     order.laborCost += row.labor_cost;
@@ -654,7 +667,8 @@ async function getOrderSummary(filters: Filters): Promise<Response> {
   for (const [orderId, data] of orderMap) {
     const meta = orderMeta.get(orderId);
     const lastSeq = meta?.lastSeq ?? 1;
-    const totalEstimatedHours = meta?.totalEstimatedHours ?? 0;
+    const totalEstimatedHoursIdeal = meta?.totalEstimatedHours ?? 0;
+    const numSteps = meta?.numSteps ?? 1;
 
     // Get sequences that have data, sorted
     const sequencesWithData = [...data.stepOutputs.keys()].sort((a, b) => a - b);
@@ -670,10 +684,24 @@ async function getOrderSummary(filters: Filters): Promise<Response> {
     const unitsInProgress = Math.max(0, unitsStarted - unitsComplete);
     const unitsNotStarted = Math.max(0, data.orderQuantity - unitsStarted);
 
-    // Progress based on hours: worked vs total estimated
-    const estimatedHoursRemaining = Math.max(0, totalEstimatedHours - data.totalHours);
-    const progressPercent = totalEstimatedHours > 0
-      ? Math.round((data.totalHours / totalEstimatedHours) * 100)
+    // Progress vs Ideal: based on time_per_piece_seconds from product definitions
+    const estimatedHoursRemainingIdeal = Math.max(0, totalEstimatedHoursIdeal - data.totalHours);
+    const progressPercentIdeal = totalEstimatedHoursIdeal > 0
+      ? Math.round((data.totalHours / totalEstimatedHoursIdeal) * 100)
+      : 0;
+
+    // Progress vs Actual Efficiency: based on observed pace
+    // Total step completions needed = orderQuantity × numSteps
+    const totalStepCompletionsNeeded = data.orderQuantity * numSteps;
+    // Actual hours per step completion (based on work done so far)
+    const actualHoursPerStepCompletion = data.totalStepCompletions > 0
+      ? data.totalHours / data.totalStepCompletions
+      : 0;
+    // Estimated total hours based on actual pace
+    const totalEstimatedHoursActual = totalStepCompletionsNeeded * actualHoursPerStepCompletion;
+    const estimatedHoursRemainingActual = Math.max(0, totalEstimatedHoursActual - data.totalHours);
+    const progressPercentActual = totalEstimatedHoursActual > 0
+      ? Math.round((data.totalHours / totalEstimatedHoursActual) * 100)
       : 0;
 
     orders.push({
@@ -683,10 +711,12 @@ async function getOrderSummary(filters: Filters): Promise<Response> {
       unitsComplete,
       unitsInProgress,
       unitsNotStarted,
-      progressPercent,
+      progressPercentIdeal,
+      estimatedHoursRemainingIdeal: Math.round(estimatedHoursRemainingIdeal * 100) / 100,
+      progressPercentActual,
+      estimatedHoursRemainingActual: Math.round(estimatedHoursRemainingActual * 100) / 100,
       tasksCompleted: data.tasksCompleted,
       totalHours: Math.round(data.totalHours * 100) / 100,
-      estimatedHoursRemaining: Math.round(estimatedHoursRemaining * 100) / 100,
       laborCost: Math.round(data.laborCost * 100) / 100,
       equipmentCost: Math.round(data.equipmentCost * 100) / 100,
       totalCost: Math.round((data.laborCost + data.equipmentCost) * 100) / 100,
@@ -694,7 +724,7 @@ async function getOrderSummary(filters: Filters): Promise<Response> {
   }
 
   // Sort by progress (incomplete first)
-  orders.sort((a, b) => a.progressPercent - b.progressPercent);
+  orders.sort((a, b) => a.progressPercentIdeal - b.progressPercentIdeal);
 
   return Response.json({
     period: { start: filters.startDate, end: filters.endDate },
