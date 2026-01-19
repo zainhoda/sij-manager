@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { Link } from "wouter";
 import DataGrid from "../components/DataGrid";
 import type { Column, CellChangeContext } from "../components/DataGrid";
 
@@ -222,6 +223,15 @@ export default function Workers() {
       header: "Name",
       width: 200,
       editable: true,
+      render: (value, row) => (
+        <Link
+          href={`/workers/${row.id}`}
+          className="text-blue-600 hover:text-blue-800 hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {String(value)}
+        </Link>
+      ),
     },
     {
       key: "status",

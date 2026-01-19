@@ -1,8 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import {
   ReactFlow,
-  Node,
-  Edge,
   Background,
   Controls,
   MiniMap,
@@ -11,9 +9,11 @@ import {
   Position,
   Handle,
 } from "@xyflow/react";
+import type { Node, Edge } from "@xyflow/react";
 import Dagre from "@dagrejs/dagre";
 import "@xyflow/react/dist/style.css";
-import DataGrid, { Column, CellChangeContext } from "../components/DataGrid";
+import DataGrid from "../components/DataGrid";
+import type { Column, CellChangeContext } from "../components/DataGrid";
 import MultiSelect from "../components/MultiSelect";
 import { Trash2, Plus, GitBranch } from "lucide-react";
 import { Link } from "wouter";
@@ -376,7 +376,7 @@ function getCategoryColor(category: string): string {
   for (let i = 0; i < category.length; i++) {
     hash = category.charCodeAt(i) + ((hash << 5) - hash);
   }
-  return COLOR_PALETTE[Math.abs(hash) % COLOR_PALETTE.length];
+  return COLOR_PALETTE[Math.abs(hash) % COLOR_PALETTE.length]!;
 }
 
 // Combobox component for category selection with ability to add new
@@ -690,8 +690,8 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
   const [steps, setSteps] = useState<ProductStep[]>([]);
   const [equipment, setEquipment] = useState<Equipment[]>([]);
   const [loading, setLoading] = useState(true);
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newStep, setNewStep] = useState({ step_code: "", name: "", category: "", time_per_piece_seconds: 60 });
@@ -904,7 +904,7 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
   const handleCellChange = useCallback(
     async ({ rowId, key, value, row, column }: CellChangeContext<ProductStep>) => {
       // Skip columns that save immediately in their onChange handlers
-      if (key === "startDependencies" || key === "finishDependencies" || key === "equipment_id" || key === "category") {
+      if ((key as string) === "startDependencies" || (key as string) === "finishDependencies" || key === "equipment_id" || key === "category") {
         return;
       }
 
@@ -1061,7 +1061,7 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
           <input
             type="number"
             className="cell-edit-input"
-            value={value ?? ""}
+            value={(value as string | number | undefined) ?? ""}
             onChange={(e) => onChange(parseInt(e.target.value) || 0)}
             onBlur={onCommit}
             onKeyDown={(e) => {
@@ -1086,13 +1086,13 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
         renderEdit: (value, onChange, onCommit, onCancel, row) => (
           <select
             className="cell-edit-select"
-            value={value ?? ""}
+            value={(value as string | number | undefined) ?? ""}
             onChange={async (e) => {
               const newVal = e.target.value ? parseInt(e.target.value) : null;
               onChange(newVal as any);
 
               // Save immediately - don't wait for onCommit
-              const equipmentName = newVal ? equipment.find(eq => eq.id === newVal)?.name : null;
+              const equipmentName = newVal ? equipment.find(eq => eq.id === newVal)?.name ?? null : null;
               setSteps((prev) =>
                 prev.map((s) => (s.id === row.id ? { ...s, equipment_id: newVal, equipment_name: equipmentName } : s))
               );
@@ -1407,7 +1407,7 @@ export default function ProductSteps({ params }: { params: { id: string } }) {
                 }}
               />
               <datalist id="category-options">
-                {[...new Set(steps.map(s => s.category).filter(Boolean))].map((cat) => (
+                {[...new Set(steps.map(s => s.category).filter((c): c is string => Boolean(c)))].map((cat) => (
                   <option key={cat} value={cat} />
                 ))}
               </datalist>

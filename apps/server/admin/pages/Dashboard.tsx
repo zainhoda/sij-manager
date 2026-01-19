@@ -121,7 +121,7 @@ export default function Dashboard() {
           <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4" />
           <p className="text-red-600 text-lg">{error}</p>
           <button
-            onClick={fetchDashboard}
+            onClick={() => fetchDashboard(selectedPeriod)}
             className="mt-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
           >
             Retry
@@ -367,7 +367,7 @@ export default function Dashboard() {
           ) : (
             <div className="space-y-4">
               {data.topWorkers.map((worker, index) => (
-                <div key={worker.id} className="flex items-center gap-4">
+                <Link key={worker.id} href={`/workers/${worker.id}`} className="flex items-center gap-4 hover:bg-slate-50 -mx-2 px-2 py-1 rounded-lg transition-colors">
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
                     index === 0 ? 'bg-yellow-100 text-yellow-700' :
                     index === 1 ? 'bg-slate-100 text-slate-600' :
@@ -387,7 +387,7 @@ export default function Dashboard() {
                   }`}>
                     {worker.efficiency}%
                   </div>
-                </div>
+                </Link>
               ))}
             </div>
           )}

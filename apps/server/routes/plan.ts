@@ -605,7 +605,7 @@ async function handleCommitPlan(orderId: number, request: Request): Promise<Resp
       INSERT INTO schedules (order_id, week_start_date, build_version_id)
       VALUES (?, ?, ?)
     `,
-    args: [orderId, weekStartDate.toISOString().split("T")[0], buildVersionId]
+    args: [orderId, weekStartDate.toISOString().split("T")[0]!, buildVersionId ?? null]
   });
 
   const scheduleId = Number(scheduleResult.lastInsertRowid);

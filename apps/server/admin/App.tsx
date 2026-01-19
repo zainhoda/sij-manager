@@ -29,6 +29,8 @@ import ImportOrders from "./pages/ImportOrders";
 import ImportProductionHistory from "./pages/ImportProductionHistory";
 import Export from "./pages/Export";
 import CertificationMatrix from "./pages/CertificationMatrix";
+import ProficiencyMatrix from "./pages/ProficiencyMatrix";
+import WorkerDetail from "./pages/WorkerDetail";
 import Orders from "./pages/Orders";
 import Schedules from "./pages/Schedules";
 import ScheduleDetail from "./pages/ScheduleDetail";
@@ -95,6 +97,7 @@ function Sidebar() {
           <NavItem href="/products" icon={<Package size={18} />} label="Products" />
           <NavItem href="/workers" icon={<Users size={18} />} label="Workers" />
           <NavItem href="/certifications" icon={<Award size={18} />} label="Certifications" />
+          <NavItem href="/proficiencies" icon={<BarChart3 size={18} />} label="Proficiencies" />
           <NavItem href="/equipment" icon={<Wrench size={18} />} label="Equipment" />
         </NavGroup>
 
@@ -132,8 +135,10 @@ function App() {
             <Route path="/products/:id/build-versions">{(params) => <BuildVersions params={params} />}</Route>
             <Route path="/products/:id">{(params) => <ProductSteps params={params} />}</Route>
             <Route path="/products" component={ProductSteps} />
+            <Route path="/workers/:id" component={WorkerDetail} />
             <Route path="/workers" component={Workers} />
             <Route path="/certifications" component={CertificationMatrix} />
+            <Route path="/proficiencies" component={ProficiencyMatrix} />
             <Route path="/equipment" component={Equipment} />
             <Route path="/orders" component={Orders} />
             <Route path="/orders/:id/plan">{(params) => <PlanEditor params={params} />}</Route>

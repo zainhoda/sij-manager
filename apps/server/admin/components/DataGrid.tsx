@@ -188,11 +188,11 @@ export function DataGrid<T extends { id: number | string }>({
           if (e.shiftKey) {
             // Move backwards
             for (let i = currentColIndex - 1; i >= 0; i--) {
-              if (columns[i].editable !== false) {
+              if (columns[i]!.editable !== false) {
                 startEditing(
-                  sortedData[currentRowIndex].id,
-                  columns[i].key,
-                  sortedData[currentRowIndex][columns[i].key]
+                  sortedData[currentRowIndex]!.id,
+                  columns[i]!.key,
+                  sortedData[currentRowIndex]![columns[i]!.key]
                 );
                 return;
               }
@@ -200,11 +200,11 @@ export function DataGrid<T extends { id: number | string }>({
             // Move to previous row, last editable column
             if (currentRowIndex > 0) {
               for (let i = columns.length - 1; i >= 0; i--) {
-                if (columns[i].editable !== false) {
+                if (columns[i]!.editable !== false) {
                   startEditing(
-                    sortedData[currentRowIndex - 1].id,
-                    columns[i].key,
-                    sortedData[currentRowIndex - 1][columns[i].key]
+                    sortedData[currentRowIndex - 1]!.id,
+                    columns[i]!.key,
+                    sortedData[currentRowIndex - 1]![columns[i]!.key]
                   );
                   return;
                 }
@@ -213,11 +213,11 @@ export function DataGrid<T extends { id: number | string }>({
           } else {
             // Move forwards
             for (let i = currentColIndex + 1; i < columns.length; i++) {
-              if (columns[i].editable !== false) {
+              if (columns[i]!.editable !== false) {
                 startEditing(
-                  sortedData[currentRowIndex].id,
-                  columns[i].key,
-                  sortedData[currentRowIndex][columns[i].key]
+                  sortedData[currentRowIndex]!.id,
+                  columns[i]!.key,
+                  sortedData[currentRowIndex]![columns[i]!.key]
                 );
                 return;
               }
@@ -225,11 +225,11 @@ export function DataGrid<T extends { id: number | string }>({
             // Move to next row, first editable column
             if (currentRowIndex < sortedData.length - 1) {
               for (let i = 0; i < columns.length; i++) {
-                if (columns[i].editable !== false) {
+                if (columns[i]!.editable !== false) {
                   startEditing(
-                    sortedData[currentRowIndex + 1].id,
-                    columns[i].key,
-                    sortedData[currentRowIndex + 1][columns[i].key]
+                    sortedData[currentRowIndex + 1]!.id,
+                    columns[i]!.key,
+                    sortedData[currentRowIndex + 1]![columns[i]!.key]
                   );
                   return;
                 }

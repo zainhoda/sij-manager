@@ -376,7 +376,7 @@ async function executeProductionDataImport(
     const dayOfWeek = date.getDay();
     const weekStart = new Date(date);
     weekStart.setDate(date.getDate() - dayOfWeek);
-    const weekStartStr = weekStart.toISOString().split('T')[0];
+    const weekStartStr = weekStart.toISOString().split('T')[0]!;
 
     // Get or create schedule
     const scheduleKey = `${row.orderId}:${weekStartStr}`;
@@ -385,7 +385,7 @@ async function executeProductionDataImport(
     if (!scheduleId) {
       const scheduleResult = await db.execute({
         sql: "INSERT INTO schedules (order_id, week_start_date) VALUES (?, ?)",
-        args: [row.orderId, weekStartStr],
+        args: [row.orderId!, weekStartStr],
       });
       scheduleId = Number(scheduleResult.lastInsertRowid);
       scheduleCache.set(scheduleKey, scheduleId);
@@ -728,7 +728,7 @@ async function executeProductionDataV2Import(
     const dayOfWeek = date.getDay();
     const weekStart = new Date(date);
     weekStart.setDate(date.getDate() - dayOfWeek);
-    const weekStartStr = weekStart.toISOString().split('T')[0];
+    const weekStartStr = weekStart.toISOString().split('T')[0]!;
 
     // Get or create schedule (now includes build_version_id)
     const scheduleKey = `${row.orderId}:${weekStartStr}:${row.buildVersionId}`;
@@ -737,7 +737,7 @@ async function executeProductionDataV2Import(
     if (!scheduleId) {
       const scheduleResult = await db.execute({
         sql: "INSERT INTO schedules (order_id, week_start_date, build_version_id) VALUES (?, ?, ?)",
-        args: [row.orderId, weekStartStr, row.buildVersionId],
+        args: [row.orderId!, weekStartStr, row.buildVersionId!],
       });
       scheduleId = Number(scheduleResult.lastInsertRowid);
       scheduleCache.set(scheduleKey, scheduleId);

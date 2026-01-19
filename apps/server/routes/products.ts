@@ -92,7 +92,7 @@ export async function handleProducts(request: Request): Promise<Response | null>
       return Response.json({ error: "Step not found" }, { status: 404 });
     }
 
-    const productId = (existing.rows[0] as { product_id: number }).product_id;
+    const productId = (existing.rows[0] as unknown as { product_id: number }).product_id;
 
     // Normalize dependencies to array of { stepId, type }
     const normalizedDeps: Array<{ stepId: number; type: 'start' | 'finish' }> = [];
@@ -183,7 +183,7 @@ export async function handleProducts(request: Request): Promise<Response | null>
       sql: "SELECT MAX(sequence) as max_seq FROM product_steps WHERE product_id = ?",
       args: [productId]
     });
-    const nextSequence = ((maxSeq.rows[0] as { max_seq: number | null })?.max_seq || 0) + 1;
+    const nextSequence = ((maxSeq.rows[0] as unknown as { max_seq: number | null })?.max_seq || 0) + 1;
 
     // Insert new step
     const result = await db.execute({
@@ -207,7 +207,7 @@ export async function handleProducts(request: Request): Promise<Response | null>
             FROM product_steps ps
             LEFT JOIN equipment e ON ps.equipment_id = e.id
             WHERE ps.id = ?`,
-      args: [result.lastInsertRowid]
+      args: [result.lastInsertRowid!]
     });
 
     return Response.json(newStep.rows[0], { status: 201 });
@@ -256,7 +256,7 @@ export async function handleProducts(request: Request): Promise<Response | null>
     if (existing.rows.length === 0) {
       return Response.json({ error: "Step not found" }, { status: 404 });
     }
-    const productId = (existing.rows[0] as { product_id: number }).product_id;
+    const productId = (existing.rows[0] as unknown as { product_id: number }).product_id;
 
     // Validate step_code if being updated
     if ("step_code" in body) {

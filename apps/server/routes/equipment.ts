@@ -88,7 +88,7 @@ async function handleCreateEquipment(request: Request): Promise<Response> {
 
     const newEquipmentResult = await db.execute({
       sql: "SELECT * FROM equipment WHERE id = ?",
-      args: [result.lastInsertRowid]
+      args: [result.lastInsertRowid!]
     });
     const equipment = newEquipmentResult.rows[0] as unknown as Equipment;
     return Response.json(equipment, { status: 201 });

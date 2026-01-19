@@ -81,7 +81,7 @@ export async function createBuildVersion(
     sql: `SELECT MAX(version_number) as max_version FROM product_build_versions WHERE product_id = ?`,
     args: [productId]
   });
-  const maxVersion = (maxVersionResult.rows[0] as { max_version: number | null })?.max_version || 0;
+  const maxVersion = (maxVersionResult.rows[0] as unknown as { max_version: number | null })?.max_version || 0;
   const nextVersionNumber = maxVersion + 1;
 
   // Create the build version
@@ -208,7 +208,7 @@ export async function addStepToBuildVersion(
       sql: `SELECT MAX(sequence) as max_seq FROM build_version_steps WHERE build_version_id = ?`,
       args: [buildVersionId]
     });
-    const maxSeq = (maxSeqResult.rows[0] as { max_seq: number | null })?.max_seq || 0;
+    const maxSeq = (maxSeqResult.rows[0] as unknown as { max_seq: number | null })?.max_seq || 0;
     sequence = maxSeq + 1;
   }
 
@@ -268,7 +268,7 @@ export async function deleteBuildVersion(buildVersionId: number): Promise<boolea
     sql: `SELECT COUNT(*) as count FROM schedules WHERE build_version_id = ?`,
     args: [buildVersionId]
   });
-  const scheduleCount = (schedulesResult.rows[0] as { count: number }).count;
+  const scheduleCount = (schedulesResult.rows[0] as unknown as { count: number }).count;
   if (scheduleCount > 0) {
     throw new Error(`Cannot delete build version: ${scheduleCount} schedules are using it`);
   }

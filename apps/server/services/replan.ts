@@ -304,7 +304,7 @@ export async function generateReplanDraft(scheduleId: number): Promise<ReplanRes
         end_time: endTimeStr,
         planned_output: outputInBlock,
         step_name: step.name,
-        category: step.category,
+        category: step.category ?? "",
         required_skill_category: step.required_skill_category as "SEWING" | "OTHER",
         is_overtime: false,
         is_auto_suggested: false,
@@ -400,7 +400,7 @@ export async function generateReplanDraft(scheduleId: number): Promise<ReplanRes
         end_time: overtimeEnd,
         planned_output: outputInBlock,
         step_name: stepForOvertime.name,
-        category: stepForOvertime.category,
+        category: stepForOvertime.category ?? "",
         required_skill_category: stepForOvertime.required_skill_category as
           | "SEWING"
           | "OTHER",

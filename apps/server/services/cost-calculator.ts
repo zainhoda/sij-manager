@@ -42,7 +42,7 @@ export interface ScheduleCostSummary {
 
 function timeToMinutes(time: string): number {
   const [hours, minutes] = time.split(":").map(Number);
-  return hours * 60 + minutes;
+  return hours! * 60 + minutes!;
 }
 
 function calculateDurationMinutes(startTime: string, endTime: string): number {

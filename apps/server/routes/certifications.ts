@@ -106,7 +106,7 @@ async function handleGrantCertification(request: Request): Promise<Response> {
       JOIN equipment e ON ec.equipment_id = e.id
       WHERE ec.id = ?
     `,
-      args: [result.lastInsertRowid]
+      args: [result.lastInsertRowid!]
     });
     const certification = certResult.rows[0];
 

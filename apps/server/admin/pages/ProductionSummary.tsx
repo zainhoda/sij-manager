@@ -134,6 +134,10 @@ interface StepSummary {
   equipmentCost: number;
   totalCost: number;
   efficiency: number;
+  estimatedSecondsPerPiece: number;
+  actualSecondsPerPiece: number | null;
+  topPerformers: { workerId: number; workerName: string; output: number; efficiency: number }[];
+  proficientWorkers: { workerId: number; workerName: string; level: number }[];
 }
 
 interface StepResponse {
@@ -644,71 +648,119 @@ export default function ProductionSummary() {
     {
       key: "productName",
       header: "Product",
-      width: 140,
-      editable: false,
-    },
-    {
-      key: "sequence",
-      header: "Seq",
-      width: 50,
+      width: 120,
       editable: false,
     },
     {
       key: "totalUnits",
       header: "Units",
-      width: 80,
-      editable: false,
-    },
-    {
-      key: "tasksCompleted",
-      header: "Tasks",
       width: 70,
       editable: false,
     },
     {
-      key: "workerCount",
-      header: "Workers",
+      key: "estimatedSecondsPerPiece",
+      header: "Est. Time",
       width: 80,
+      editable: false,
+      render: (value) => `${Number(value)}s`,
+    },
+    {
+      key: "actualSecondsPerPiece",
+      header: "Actual",
+      width: 80,
+      editable: false,
+      render: (value, row) => {
+        if (value === null) return <span style={{ color: "#94a3b8" }}>-</span>;
+        const actual = Number(value);
+        const estimated = row.estimatedSecondsPerPiece;
+        const color = actual <= estimated ? "#22c55e" : actual <= estimated * 1.2 ? "#f59e0b" : "#dc2626";
+        return <span style={{ color }}>{actual.toFixed(1)}s</span>;
+      },
+    },
+    {
+      key: "efficiency",
+      header: "Efficiency",
+      width: 85,
+      editable: false,
+      render: (value) => {
+        const eff = Number(value);
+        const color = eff >= 100 ? "#22c55e" : eff >= 80 ? "#f59e0b" : "#dc2626";
+        return <span style={{ color, fontWeight: 600 }}>{eff}%</span>;
+      },
+    },
+    {
+      key: "topPerformers",
+      header: "Top Performers",
+      width: 200,
+      editable: false,
+      render: (value) => {
+        const performers = value as StepSummary["topPerformers"];
+        if (!performers || performers.length === 0) {
+          return <span style={{ color: "#94a3b8", fontSize: 12 }}>No data</span>;
+        }
+        return (
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            {performers.slice(0, 3).map((p, i) => (
+              <span
+                key={p.workerId}
+                style={{
+                  fontSize: 11,
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                  backgroundColor: i === 0 ? "#fef08a" : "#f1f5f9",
+                  color: "#334155",
+                }}
+                title={`${p.output} units, ${p.efficiency}% efficiency`}
+              >
+                {p.workerName}
+                <span style={{ color: p.efficiency >= 100 ? "#16a34a" : "#64748b", marginLeft: 4 }}>
+                  {p.efficiency}%
+                </span>
+              </span>
+            ))}
+          </div>
+        );
+      },
+    },
+    {
+      key: "proficientWorkers",
+      header: "Proficient (3+)",
+      width: 150,
+      editable: false,
+      render: (value) => {
+        const workers = value as StepSummary["proficientWorkers"];
+        if (!workers || workers.length === 0) {
+          return <span style={{ color: "#94a3b8", fontSize: 12 }}>None set</span>;
+        }
+        const display = workers.slice(0, 3);
+        const more = workers.length - 3;
+        return (
+          <div style={{ fontSize: 11, color: "#64748b" }}>
+            {display.map(w => w.workerName).join(", ")}
+            {more > 0 && <span style={{ color: "#94a3b8" }}> +{more}</span>}
+          </div>
+        );
+      },
+    },
+    {
+      key: "workerCount",
+      header: "Active",
+      width: 60,
       editable: false,
     },
     {
       key: "totalHours",
       header: "Hours",
-      width: 80,
+      width: 70,
       editable: false,
       render: (value) => `${Number(value).toFixed(1)}h`,
     },
     {
-      key: "laborCost",
-      header: "Labor $",
-      width: 90,
-      editable: false,
-      render: (value) => `$${Number(value).toFixed(2)}`,
-    },
-    {
-      key: "equipmentCost",
-      header: "Equip $",
-      width: 90,
-      editable: false,
-      render: (value) => `$${Number(value).toFixed(2)}`,
-    },
-    {
       key: "totalCost",
-      header: "Total $",
-      width: 90,
+      header: "Cost",
+      width: 80,
       editable: false,
-      render: (value) => `$${Number(value).toFixed(2)}`,
-    },
-    {
-      key: "efficiency",
-      header: "Efficiency",
-      width: 90,
-      editable: false,
-      render: (value) => {
-        const eff = Number(value);
-        const color = eff >= 100 ? "#22c55e" : eff >= 80 ? "#f59e0b" : "#dc2626";
-        return <span style={{ color }}>{eff}%</span>;
-      },
+      render: (value) => `$${Number(value).toFixed(0)}`,
     },
   ];
 

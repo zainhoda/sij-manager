@@ -218,8 +218,8 @@ export async function getCapacityAnalysis(weeks: number = 8): Promise<CapacityAn
       WHERE date >= ? AND date <= ?
     `,
       args: [
-        currentWeekStart.toISOString().split('T')[0],
-        weekEnd.toISOString().split('T')[0]
+        currentWeekStart.toISOString().split('T')[0]!,
+        weekEnd.toISOString().split('T')[0]!
       ]
     });
     const scheduledHours = scheduledHoursResult.rows[0] as unknown as { total_hours: number | null };
@@ -258,7 +258,7 @@ export async function createScenario(
 
   const scenarioResult = await db.execute({
     sql: "SELECT * FROM scheduling_scenarios WHERE id = ?",
-    args: [result.lastInsertRowid]
+    args: [result.lastInsertRowid!]
   });
   return scenarioResult.rows[0] as unknown as SchedulingScenario;
 }
@@ -368,8 +368,8 @@ export async function generateScenarioSchedule(scenarioId: number): Promise<{
       WHERE date >= ? AND date <= ?
     `,
       args: [
-        currentWeekStart.toISOString().split('T')[0],
-        weekEnd.toISOString().split('T')[0]
+        currentWeekStart.toISOString().split('T')[0]!,
+        weekEnd.toISOString().split('T')[0]!
       ]
     });
     const scheduledHours = scheduledHoursResult.rows[0] as unknown as { total_hours: number | null };

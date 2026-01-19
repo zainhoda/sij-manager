@@ -59,6 +59,10 @@ interface StepSummary {
   equipmentCost: number;
   totalCost: number;
   efficiency: number;
+  estimatedSecondsPerPiece: number;
+  actualSecondsPerPiece: number | null;
+  topPerformers: { workerId: number; workerName: string; output: number; efficiency: number }[];
+  proficientWorkers: { workerId: number; workerName: string; level: number }[];
 }
 
 interface Filters {
@@ -742,6 +746,7 @@ async function getStepSummary(filters: Filters): Promise<Response> {
         ps.name as step_name,
         p.name as product_name,
         ps.sequence,
+        ps.time_per_piece_seconds,
         COALESCE(SUM(twa.actual_output), 0) as total_units,
         COUNT(DISTINCT CASE WHEN twa.status = 'completed' THEN twa.id END) as tasks_completed,
         COUNT(DISTINCT twa.worker_id) as worker_count,
@@ -777,17 +782,111 @@ async function getStepSummary(filters: Filters): Promise<Response> {
       LEFT JOIN workers w ON twa.worker_id = w.id
       LEFT JOIN equipment e ON ps.equipment_id = e.id
       WHERE ${filterClause}
-      GROUP BY ps.id, ps.name, p.name, ps.sequence
+      GROUP BY ps.id, ps.name, p.name, ps.sequence, ps.time_per_piece_seconds
       ORDER BY p.name, ps.sequence
     `,
     args: filterArgs
   });
+
+  // Get step IDs for additional queries
+  const stepIds = (result.rows as unknown as { step_id: number }[]).map(r => r.step_id);
+
+  // Get top performers per step
+  const performersResult = stepIds.length > 0 ? await db.execute({
+    sql: `
+      SELECT
+        ps.id as step_id,
+        w.id as worker_id,
+        w.name as worker_name,
+        SUM(twa.actual_output) as output,
+        SUM(
+          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
+          THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24 * 3600
+          ELSE 0 END
+        ) as total_seconds,
+        ps.time_per_piece_seconds
+      FROM task_worker_assignments twa
+      JOIN schedule_entries se ON twa.schedule_entry_id = se.id
+      JOIN product_steps ps ON se.product_step_id = ps.id
+      JOIN workers w ON twa.worker_id = w.id
+      WHERE twa.status = 'completed'
+        AND twa.actual_output > 0
+        AND ps.id IN (${stepIds.map(() => "?").join(",")})
+      GROUP BY ps.id, w.id
+      ORDER BY ps.id, output DESC
+    `,
+    args: stepIds
+  }) : { rows: [] };
+
+  // Get proficient workers per step
+  const proficienciesResult = stepIds.length > 0 ? await db.execute({
+    sql: `
+      SELECT
+        wp.product_step_id as step_id,
+        w.id as worker_id,
+        w.name as worker_name,
+        wp.level
+      FROM worker_proficiencies wp
+      JOIN workers w ON wp.worker_id = w.id
+      WHERE wp.level >= 3
+        AND wp.product_step_id IN (${stepIds.map(() => "?").join(",")})
+      ORDER BY wp.product_step_id, wp.level DESC, w.name
+    `,
+    args: stepIds
+  }) : { rows: [] };
+
+  // Group performers by step (top 3)
+  const performersByStep = new Map<number, { workerId: number; workerName: string; output: number; efficiency: number }[]>();
+  for (const row of performersResult.rows as unknown as {
+    step_id: number;
+    worker_id: number;
+    worker_name: string;
+    output: number;
+    total_seconds: number;
+    time_per_piece_seconds: number;
+  }[]) {
+    if (!performersByStep.has(row.step_id)) {
+      performersByStep.set(row.step_id, []);
+    }
+    const stepPerformers = performersByStep.get(row.step_id)!;
+    if (stepPerformers.length < 3) {
+      const actualSecondsPerPiece = row.output > 0 ? row.total_seconds / row.output : 0;
+      const efficiency = actualSecondsPerPiece > 0 && row.time_per_piece_seconds > 0
+        ? Math.round((row.time_per_piece_seconds / actualSecondsPerPiece) * 100)
+        : 0;
+      stepPerformers.push({
+        workerId: row.worker_id,
+        workerName: row.worker_name,
+        output: row.output,
+        efficiency,
+      });
+    }
+  }
+
+  // Group proficiencies by step
+  const proficienciesByStep = new Map<number, { workerId: number; workerName: string; level: number }[]>();
+  for (const row of proficienciesResult.rows as unknown as {
+    step_id: number;
+    worker_id: number;
+    worker_name: string;
+    level: number;
+  }[]) {
+    if (!proficienciesByStep.has(row.step_id)) {
+      proficienciesByStep.set(row.step_id, []);
+    }
+    proficienciesByStep.get(row.step_id)!.push({
+      workerId: row.worker_id,
+      workerName: row.worker_name,
+      level: row.level,
+    });
+  }
 
   const steps: StepSummary[] = (result.rows as unknown as {
     step_id: number;
     step_name: string;
     product_name: string;
     sequence: number;
+    time_per_piece_seconds: number;
     total_units: number;
     tasks_completed: number;
     worker_count: number;
@@ -795,20 +894,29 @@ async function getStepSummary(filters: Filters): Promise<Response> {
     labor_cost: number;
     equipment_cost: number;
     expected_hours: number;
-  }[]).map(row => ({
-    stepId: row.step_id,
-    stepName: row.step_name,
-    productName: row.product_name,
-    sequence: row.sequence,
-    totalUnits: row.total_units,
-    tasksCompleted: row.tasks_completed,
-    workerCount: row.worker_count,
-    totalHours: Math.round(row.total_hours * 100) / 100,
-    laborCost: Math.round(row.labor_cost * 100) / 100,
-    equipmentCost: Math.round(row.equipment_cost * 100) / 100,
-    totalCost: Math.round((row.labor_cost + row.equipment_cost) * 100) / 100,
-    efficiency: row.total_hours > 0 ? Math.round((row.expected_hours / row.total_hours) * 100) : 0
-  }));
+  }[]).map(row => {
+    const totalSeconds = row.total_hours * 3600;
+    const actualSecondsPerPiece = row.total_units > 0 ? totalSeconds / row.total_units : null;
+
+    return {
+      stepId: row.step_id,
+      stepName: row.step_name,
+      productName: row.product_name,
+      sequence: row.sequence,
+      totalUnits: row.total_units,
+      tasksCompleted: row.tasks_completed,
+      workerCount: row.worker_count,
+      totalHours: Math.round(row.total_hours * 100) / 100,
+      laborCost: Math.round(row.labor_cost * 100) / 100,
+      equipmentCost: Math.round(row.equipment_cost * 100) / 100,
+      totalCost: Math.round((row.labor_cost + row.equipment_cost) * 100) / 100,
+      efficiency: row.total_hours > 0 ? Math.round((row.expected_hours / row.total_hours) * 100) : 0,
+      estimatedSecondsPerPiece: row.time_per_piece_seconds,
+      actualSecondsPerPiece: actualSecondsPerPiece ? Math.round(actualSecondsPerPiece * 10) / 10 : null,
+      topPerformers: performersByStep.get(row.step_id) || [],
+      proficientWorkers: proficienciesByStep.get(row.step_id) || [],
+    };
+  });
 
   return Response.json({
     period: { start: filters.startDate, end: filters.endDate },

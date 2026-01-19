@@ -137,7 +137,7 @@ async function handleCreateOrder(request: Request): Promise<Response> {
         JOIN products p ON o.product_id = p.id
         WHERE o.id = ?
       `,
-      args: [result.lastInsertRowid]
+      args: [result.lastInsertRowid!]
     });
     const order = newOrderResult.rows[0];
     return Response.json(order, { status: 201 });
@@ -250,7 +250,7 @@ async function handleDeleteOrder(orderId: number): Promise<Response> {
     sql: "SELECT id FROM schedules WHERE order_id = ?",
     args: [orderId]
   });
-  const scheduleIds = (schedulesResult.rows as { id: number }[]).map(r => r.id);
+  const scheduleIds = (schedulesResult.rows as unknown as { id: number }[]).map(r => r.id);
 
   if (scheduleIds.length > 0) {
     // Get schedule entry IDs
@@ -258,7 +258,7 @@ async function handleDeleteOrder(orderId: number): Promise<Response> {
       sql: `SELECT id FROM schedule_entries WHERE schedule_id IN (${scheduleIds.map(() => '?').join(',')})`,
       args: scheduleIds
     });
-    const entryIds = (entriesResult.rows as { id: number }[]).map(r => r.id);
+    const entryIds = (entriesResult.rows as unknown as { id: number }[]).map(r => r.id);
 
     if (entryIds.length > 0) {
       // Delete task worker assignments

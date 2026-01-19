@@ -507,9 +507,9 @@ export async function getAssignmentTimeMetrics(assignmentId: number): Promise<As
   const timePerPieceIntervals: number[] = [];
   
   for (let i = 1; i < history.length; i++) {
-    const prev = history[i - 1];
-    const curr = history[i];
-    
+    const prev = history[i - 1]!;
+    const curr = history[i]!;
+
     const prevTime = new Date(prev.recorded_at).getTime();
     const currTime = new Date(curr.recorded_at).getTime();
     const timeDiffSeconds = (currTime - prevTime) / 1000;

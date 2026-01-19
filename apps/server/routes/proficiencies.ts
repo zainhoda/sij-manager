@@ -10,6 +10,41 @@ interface ProficiencyWithStep extends WorkerProficiency {
 export async function handleProficiencies(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
 
+  // GET /api/proficiencies/matrix - get matrix data for proficiency view
+  if (url.pathname === "/api/proficiencies/matrix" && request.method === "GET") {
+    const productId = url.searchParams.get("product_id");
+
+    const [workersResult, stepsResult, proficienciesResult] = await Promise.all([
+      db.execute("SELECT id, name, employee_id, status FROM workers ORDER BY name"),
+      productId
+        ? db.execute({
+            sql: `SELECT ps.id, ps.name, ps.sequence, ps.product_id, p.name as product_name
+                  FROM product_steps ps
+                  JOIN products p ON ps.product_id = p.id
+                  WHERE ps.product_id = ?
+                  ORDER BY ps.sequence`,
+            args: [parseInt(productId)]
+          })
+        : db.execute(`
+            SELECT ps.id, ps.name, ps.sequence, ps.product_id, p.name as product_name
+            FROM product_steps ps
+            JOIN products p ON ps.product_id = p.id
+            ORDER BY p.name, ps.sequence
+          `),
+      db.execute("SELECT id, worker_id, product_step_id, level FROM worker_proficiencies"),
+    ]);
+
+    // Also get products for the filter dropdown
+    const productsResult = await db.execute("SELECT id, name FROM products ORDER BY name");
+
+    return Response.json({
+      workers: workersResult.rows,
+      steps: stepsResult.rows,
+      proficiencies: proficienciesResult.rows,
+      products: productsResult.rows,
+    });
+  }
+
   // GET /api/workers/:id/proficiencies - get all proficiencies for a worker
   const workerProfMatch = url.pathname.match(/^\/api\/workers\/(\d+)\/proficiencies$/);
   if (workerProfMatch && request.method === "GET") {
@@ -212,7 +247,7 @@ async function handleCreateOrUpdateProficiency(request: Request): Promise<Respon
 
       const createdResult = await db.execute({
         sql: "SELECT * FROM worker_proficiencies WHERE id = ?",
-        args: [result.lastInsertRowid]
+        args: [result.lastInsertRowid!]
       });
       const created = createdResult.rows[0] as unknown as WorkerProficiency;
 

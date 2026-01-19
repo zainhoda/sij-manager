@@ -72,7 +72,7 @@ export async function generateEquipmentMatrixCSV(): Promise<string> {
     FROM workers
     ORDER BY name
   `);
-  const workers = workersResult.rows as { id: number; name: string; cost_per_hour: number }[];
+  const workers = workersResult.rows as unknown as { id: number; name: string; cost_per_hour: number }[];
 
   // Get all equipment with work category
   const equipmentResult = await db.execute(`
@@ -81,7 +81,7 @@ export async function generateEquipmentMatrixCSV(): Promise<string> {
     LEFT JOIN work_categories wc ON e.work_category_id = wc.id
     ORDER BY wc.name, e.name
   `);
-  const equipment = equipmentResult.rows as {
+  const equipment = equipmentResult.rows as unknown as {
     id: number;
     name: string;
     description: string | null;
@@ -95,7 +95,7 @@ export async function generateEquipmentMatrixCSV(): Promise<string> {
     SELECT worker_id, equipment_id
     FROM equipment_certifications
   `);
-  const certifications = certsResult.rows as { worker_id: number; equipment_id: number }[];
+  const certifications = certsResult.rows as unknown as { worker_id: number; equipment_id: number }[];
 
   // Build certification lookup: Map<equipmentId, Set<workerId>>
   const certLookup = new Map<number, Set<number>>();
@@ -167,7 +167,7 @@ export async function generateProductsCSV(): Promise<string> {
     JOIN product_build_versions bv ON bv.product_id = p.id
     ORDER BY p.name, bv.version_number
   `);
-  const versions = versionsResult.rows as {
+  const versions = versionsResult.rows as unknown as {
     product_id: number;
     product_name: string;
     version_id: number;
@@ -208,7 +208,7 @@ export async function generateProductsCSV(): Promise<string> {
       `,
       args: [version.version_id]
     });
-    const steps = stepsResult.rows as {
+    const steps = stepsResult.rows as unknown as {
       step_id: number;
       step_code: string | null;
       task_name: string;
@@ -234,7 +234,7 @@ export async function generateProductsCSV(): Promise<string> {
         `,
         args: stepIds
       });
-      const deps = depsResult.rows as { step_id: number; dependency_type: string; step_code: string | null }[];
+      const deps = depsResult.rows as unknown as { step_id: number; dependency_type: string; step_code: string | null }[];
 
       for (const dep of deps) {
         if (!dependenciesMap.has(dep.step_id)) {
@@ -288,7 +288,7 @@ export async function generateOrdersCSV(): Promise<string> {
     JOIN products p ON o.product_id = p.id
     ORDER BY o.due_date, p.name
   `);
-  const orders = ordersResult.rows as {
+  const orders = ordersResult.rows as unknown as {
     quantity: number;
     due_date: string;
     status: string;
@@ -344,7 +344,7 @@ export async function generateProductionHistoryCSV(): Promise<string> {
       AND twa.actual_end_time IS NOT NULL
     ORDER BY se.date, twa.actual_start_time
   `);
-  const rows = result.rows as {
+  const rows = result.rows as unknown as {
     product_name: string;
     due_date: string;
     version_name: string;

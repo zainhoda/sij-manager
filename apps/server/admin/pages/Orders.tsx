@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Link } from "wouter";
 import { Trash2 } from "lucide-react";
-import DataGrid, { Column, CellChangeContext } from "../components/DataGrid";
+import DataGrid from "../components/DataGrid";
+import type { Column, CellChangeContext } from "../components/DataGrid";
 
 interface Product {
   id: number;
@@ -44,7 +45,7 @@ function AddOrderModal({ isOpen, onClose, onSuccess, products }: AddOrderModalPr
       setFormData({
         product_id: products[0]?.id.toString() || "",
         quantity: 1,
-        due_date: twoWeeksFromNow.toISOString().split("T")[0],
+        due_date: twoWeeksFromNow.toISOString().split("T")[0]!,
       });
       setError(null);
     }

@@ -420,7 +420,7 @@ async function backfillDefaultBuildVersions(db: Client) {
   `);
 
   for (const row of productsWithoutVersion.rows) {
-    const productId = (row as { product_id: number }).product_id;
+    const productId = (row as unknown as { product_id: number }).product_id;
 
     // Create v1.0 build version
     const result = await db.execute({
@@ -434,7 +434,7 @@ async function backfillDefaultBuildVersions(db: Client) {
     await db.execute({
       sql: `INSERT INTO build_version_steps (build_version_id, product_step_id, sequence)
             SELECT ?, id, sequence FROM product_steps WHERE product_id = ?`,
-      args: [buildVersionId, productId]
+      args: [buildVersionId!, productId]
     });
   }
 

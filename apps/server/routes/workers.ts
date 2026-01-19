@@ -86,6 +86,12 @@ export async function handleWorkers(request: Request): Promise<Response | null> 
     return handleDeleteWorker(parseInt(workerMatch[1]!));
   }
 
+  // GET /api/workers/:id/stats - get detailed stats for worker
+  const statsMatch = url.pathname.match(/^\/api\/workers\/(\d+)\/stats$/);
+  if (statsMatch && request.method === "GET") {
+    return handleWorkerStats(parseInt(statsMatch[1]!));
+  }
+
   // GET /api/workers/:id/certifications - get certifications for worker
   const certificationsMatch = url.pathname.match(/^\/api\/workers\/(\d+)\/certifications$/);
   if (certificationsMatch && request.method === "GET") {
@@ -292,7 +298,7 @@ async function handleDeleteWorker(workerId: number): Promise<Response> {
     args: [workerId]
   });
   const worker = workerResult.rows[0];
-  
+
   if (!worker) {
     return Response.json({ error: "Worker not found" }, { status: 404 });
   }
@@ -302,7 +308,7 @@ async function handleDeleteWorker(workerId: number): Promise<Response> {
     sql: "SELECT id FROM schedule_entries WHERE worker_id = ?",
     args: [workerId]
   });
-  
+
   if (schedulesResult.rows.length > 0) {
     return Response.json({ error: "Cannot delete worker with scheduled entries" }, { status: 409 });
   }
@@ -312,4 +318,225 @@ async function handleDeleteWorker(workerId: number): Promise<Response> {
     args: [workerId]
   });
   return Response.json({ success: true });
+}
+
+async function handleWorkerStats(workerId: number): Promise<Response> {
+  // Get worker basic info
+  const workerResult = await db.execute({
+    sql: `
+      SELECT w.*, wc.name as work_category_name
+      FROM workers w
+      LEFT JOIN work_categories wc ON w.work_category_id = wc.id
+      WHERE w.id = ?
+    `,
+    args: [workerId]
+  });
+  const worker = workerResult.rows[0] as unknown as (Worker & { work_category_name: string | null }) | undefined;
+
+  if (!worker) {
+    return Response.json({ error: "Worker not found" }, { status: 404 });
+  }
+
+  // Get overall performance stats from task_worker_assignments
+  const overallStatsResult = await db.execute({
+    sql: `
+      SELECT
+        COUNT(*) as total_tasks,
+        COALESCE(SUM(actual_output), 0) as total_output,
+        COALESCE(SUM(
+          CASE
+            WHEN actual_start_time IS NOT NULL AND actual_end_time IS NOT NULL
+            THEN (julianday(actual_end_time) - julianday(actual_start_time)) * 24
+            ELSE 0
+          END
+        ), 0) as total_hours
+      FROM task_worker_assignments
+      WHERE worker_id = ? AND status = 'completed'
+    `,
+    args: [workerId]
+  });
+  const overallStats = overallStatsResult.rows[0] as unknown as {
+    total_tasks: number;
+    total_output: number;
+    total_hours: number;
+  };
+
+  // Get per-step performance breakdown
+  const stepStatsResult = await db.execute({
+    sql: `
+      SELECT
+        ps.id as step_id,
+        ps.name as step_name,
+        ps.time_per_piece_seconds as estimated_seconds,
+        p.name as product_name,
+        COUNT(*) as times_performed,
+        SUM(twa.actual_output) as total_output,
+        SUM(
+          CASE
+            WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
+            THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24 * 3600
+            ELSE 0
+          END
+        ) as total_seconds,
+        AVG(
+          CASE
+            WHEN twa.actual_output > 0 AND twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
+            THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24 * 3600 / twa.actual_output
+            ELSE NULL
+          END
+        ) as avg_seconds_per_piece
+      FROM task_worker_assignments twa
+      JOIN schedule_entries se ON twa.schedule_entry_id = se.id
+      JOIN product_steps ps ON se.product_step_id = ps.id
+      JOIN products p ON ps.product_id = p.id
+      WHERE twa.worker_id = ? AND twa.status = 'completed' AND twa.actual_output > 0
+      GROUP BY ps.id
+      ORDER BY total_output DESC
+    `,
+    args: [workerId]
+  });
+  const stepStats = stepStatsResult.rows as unknown as {
+    step_id: number;
+    step_name: string;
+    estimated_seconds: number;
+    product_name: string;
+    times_performed: number;
+    total_output: number;
+    total_seconds: number;
+    avg_seconds_per_piece: number | null;
+  }[];
+
+  // Calculate efficiency per step
+  const stepPerformance = stepStats.map((s) => ({
+    ...s,
+    efficiency:
+      s.avg_seconds_per_piece && s.estimated_seconds
+        ? Math.round((s.estimated_seconds / s.avg_seconds_per_piece) * 100)
+        : null,
+  }));
+
+  // Get proficiencies
+  const proficienciesResult = await db.execute({
+    sql: `
+      SELECT
+        wp.id,
+        wp.product_step_id,
+        wp.level,
+        ps.name as step_name,
+        p.name as product_name
+      FROM worker_proficiencies wp
+      JOIN product_steps ps ON wp.product_step_id = ps.id
+      JOIN products p ON ps.product_id = p.id
+      WHERE wp.worker_id = ?
+      ORDER BY p.name, ps.sequence
+    `,
+    args: [workerId]
+  });
+  const proficiencies = proficienciesResult.rows as unknown as {
+    id: number;
+    product_step_id: number;
+    level: number;
+    step_name: string;
+    product_name: string;
+  }[];
+
+  // Get certifications
+  const certificationsResult = await db.execute({
+    sql: `
+      SELECT ec.id, ec.equipment_id, e.name as equipment_name
+      FROM equipment_certifications ec
+      JOIN equipment e ON ec.equipment_id = e.id
+      WHERE ec.worker_id = ?
+      ORDER BY e.name
+    `,
+    args: [workerId]
+  });
+  const certifications = certificationsResult.rows as unknown as {
+    id: number;
+    equipment_id: number;
+    equipment_name: string;
+  }[];
+
+  // Get daily production for recent days
+  const dailyProductionResult = await db.execute({
+    sql: `
+      SELECT
+        date(twa.actual_start_time) as date,
+        SUM(twa.actual_output) as output,
+        SUM(
+          CASE
+            WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
+            THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
+            ELSE 0
+          END
+        ) as hours
+      FROM task_worker_assignments twa
+      WHERE twa.worker_id = ?
+        AND twa.status = 'completed'
+        AND twa.actual_start_time IS NOT NULL
+        AND date(twa.actual_start_time) >= date('now', '-30 days')
+      GROUP BY date(twa.actual_start_time)
+      ORDER BY date(twa.actual_start_time) DESC
+      LIMIT 14
+    `,
+    args: [workerId]
+  });
+  const dailyProduction = dailyProductionResult.rows as unknown as {
+    date: string;
+    output: number;
+    hours: number;
+  }[];
+
+  // Calculate team averages for comparison
+  const teamAveragesResult = await db.execute({
+    sql: `
+      SELECT
+        AVG(worker_total) as avg_output,
+        AVG(worker_hours) as avg_hours,
+        AVG(worker_tasks) as avg_tasks
+      FROM (
+        SELECT
+          worker_id,
+          SUM(actual_output) as worker_total,
+          SUM(
+            CASE
+              WHEN actual_start_time IS NOT NULL AND actual_end_time IS NOT NULL
+              THEN (julianday(actual_end_time) - julianday(actual_start_time)) * 24
+              ELSE 0
+            END
+          ) as worker_hours,
+          COUNT(*) as worker_tasks
+        FROM task_worker_assignments
+        WHERE status = 'completed'
+        GROUP BY worker_id
+      )
+    `
+  });
+  const teamAverages = teamAveragesResult.rows[0] as unknown as {
+    avg_output: number | null;
+    avg_hours: number | null;
+    avg_tasks: number | null;
+  };
+
+  return Response.json({
+    worker,
+    stats: {
+      total_tasks: overallStats.total_tasks,
+      total_output: overallStats.total_output,
+      total_hours: overallStats.total_hours,
+      output_per_hour:
+        overallStats.total_hours > 0
+          ? Math.round(overallStats.total_output / overallStats.total_hours)
+          : 0,
+    },
+    teamAverages: {
+      avg_output: teamAverages.avg_output ?? 0,
+      avg_hours: teamAverages.avg_hours ?? 0,
+      avg_tasks: teamAverages.avg_tasks ?? 0,
+    },
+    stepPerformance,
+    proficiencies,
+    certifications,
+    dailyProduction: dailyProduction.reverse(),
+  });
 }

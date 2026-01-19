@@ -84,14 +84,14 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
   const activeOrdersResult = await db.execute(`
     SELECT COUNT(*) as count FROM orders WHERE status IN ('pending', 'scheduled', 'in_progress')
   `);
-  const activeOrders = (activeOrdersResult.rows[0] as { count: number })?.count ?? 0;
+  const activeOrders = (activeOrdersResult.rows[0] as unknown as { count: number })?.count ?? 0;
 
   // Get orders due this week
   const ordersDueResult = await db.execute({
     sql: `SELECT COUNT(*) as count FROM orders WHERE status != 'completed' AND due_date <= ?`,
     args: [weekFromNow]
   });
-  const ordersDueThisWeek = (ordersDueResult.rows[0] as { count: number })?.count ?? 0;
+  const ordersDueThisWeek = (ordersDueResult.rows[0] as unknown as { count: number })?.count ?? 0;
 
   // Get units produced for target period
   const unitsTodayResult = await db.execute({
@@ -103,7 +103,7 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
     `,
     args: [targetDate]
   });
-  const unitsToday = (unitsTodayResult.rows[0] as { units: number })?.units ?? 0;
+  const unitsToday = (unitsTodayResult.rows[0] as unknown as { units: number })?.units ?? 0;
 
   // Get units produced for comparison period (day before target)
   const comparisonDate = period === "yesterday"
@@ -118,7 +118,7 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
     `,
     args: [comparisonDate]
   });
-  const unitsYesterday = (unitsYesterdayResult.rows[0] as { units: number })?.units ?? 0;
+  const unitsYesterday = (unitsYesterdayResult.rows[0] as unknown as { units: number })?.units ?? 0;
 
   // Get average efficiency (last 7 days)
   const efficiencyResult = await db.execute({
@@ -137,7 +137,7 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
     `,
     args: [sevenDaysAgo]
   });
-  const effRow = efficiencyResult.rows[0] as { expected_hours: number; actual_hours: number };
+  const effRow = efficiencyResult.rows[0] as unknown as { expected_hours: number; actual_hours: number };
   const avgEfficiency = effRow?.actual_hours > 0
     ? Math.round((effRow.expected_hours / effRow.actual_hours) * 100)
     : 0;
@@ -152,13 +152,13 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
     `,
     args: [targetDate]
   });
-  const workersActiveToday = (workersActiveTodayResult.rows[0] as { count: number })?.count ?? 0;
+  const workersActiveToday = (workersActiveTodayResult.rows[0] as unknown as { count: number })?.count ?? 0;
 
   // Get total workers
   const totalWorkersResult = await db.execute(`
     SELECT COUNT(*) as count FROM workers WHERE status = 'active'
   `);
-  const totalWorkers = (totalWorkersResult.rows[0] as { count: number })?.count ?? 0;
+  const totalWorkers = (totalWorkersResult.rows[0] as unknown as { count: number })?.count ?? 0;
 
   // Get order progress for active orders using step completions percentage
   // (same calculation as Production Summary "vs. Act. Eff.")
@@ -213,7 +213,7 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
     LIMIT 10
   `);
 
-  const orders: DashboardOrder[] = (ordersResult.rows as {
+  const orders: DashboardOrder[] = (ordersResult.rows as unknown as {
     id: number;
     product_name: string;
     quantity: number;
@@ -290,7 +290,7 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
     args: [targetDate]
   });
 
-  const topWorkers: TopWorker[] = (topWorkersResult.rows as {
+  const topWorkers: TopWorker[] = (topWorkersResult.rows as unknown as {
     id: number;
     name: string;
     units_today: number;
@@ -319,7 +319,7 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
   });
 
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const dailyProduction: DailyProduction[] = (dailyResult.rows as {
+  const dailyProduction: DailyProduction[] = (dailyResult.rows as unknown as {
     date: string;
     units: number;
   }[]).map(row => ({
@@ -340,7 +340,7 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
       `,
       args: [today]
     });
-    actualUnitsToday = (actualTodayResult.rows[0] as { units: number })?.units ?? 0;
+    actualUnitsToday = (actualTodayResult.rows[0] as unknown as { units: number })?.units ?? 0;
   }
 
   return {
