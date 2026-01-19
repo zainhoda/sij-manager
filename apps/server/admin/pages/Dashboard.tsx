@@ -300,7 +300,7 @@ export default function Dashboard() {
                 };
 
                 return (
-                  <div key={order.id} className="border border-slate-100 rounded-xl p-4 hover:border-slate-200 transition-colors">
+                  <Link key={order.id} href={`/orders/${order.id}/detail`} className="block border border-slate-100 rounded-xl p-4 hover:border-slate-300 hover:shadow-sm transition-all cursor-pointer">
                     <div className="flex items-center justify-between mb-3">
                       <div>
                         <h3 className="font-semibold text-slate-900">{order.productName}</h3>
@@ -345,7 +345,7 @@ export default function Dashboard() {
                         </span>
                       </div>
                     </div>
-                  </div>
+                  </Link>
                 );
               })}
             </div>

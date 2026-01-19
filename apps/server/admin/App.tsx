@@ -32,6 +32,7 @@ import CertificationMatrix from "./pages/CertificationMatrix";
 import ProficiencyMatrix from "./pages/ProficiencyMatrix";
 import WorkerDetail from "./pages/WorkerDetail";
 import Orders from "./pages/Orders";
+import OrderDetail from "./pages/OrderDetail";
 import Schedules from "./pages/Schedules";
 import ScheduleDetail from "./pages/ScheduleDetail";
 import Equipment from "./pages/Equipment";
@@ -141,6 +142,7 @@ function App() {
             <Route path="/proficiencies" component={ProficiencyMatrix} />
             <Route path="/equipment" component={Equipment} />
             <Route path="/orders" component={Orders} />
+            <Route path="/orders/:id/detail" component={OrderDetail} />
             <Route path="/orders/:id/plan">{(params) => <PlanEditor params={params} />}</Route>
             <Route path="/schedules/:id" component={ScheduleDetail} />
             <Route path="/schedules" component={Schedules} />
