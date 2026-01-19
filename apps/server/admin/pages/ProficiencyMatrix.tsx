@@ -58,6 +58,14 @@ const LEVEL_LABELS: Record<number, string> = {
   5: "Expert",
 };
 
+const LEVEL_MULTIPLIERS: Record<number, string> = {
+  1: "1.5x (50% slower)",
+  2: "1.25x (25% slower)",
+  3: "1.0x (baseline)",
+  4: "0.85x (15% faster)",
+  5: "0.7x (30% faster)",
+};
+
 export default function ProficiencyMatrix() {
   const [workers, setWorkers] = useState<MatrixWorker[]>([]);
   const [steps, setSteps] = useState<MatrixStep[]>([]);
@@ -68,6 +76,7 @@ export default function ProficiencyMatrix() {
   const [productFilter, setProductFilter] = useState<number | "all">("all");
   const [pendingUpdates, setPendingUpdates] = useState<Set<string>>(new Set());
   const [editingCell, setEditingCell] = useState<string | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
 
   const fetchMatrixData = useCallback(async () => {
     setLoading(true);
@@ -206,8 +215,114 @@ export default function ProficiencyMatrix() {
     <div className="page">
       <h1>Proficiency Matrix</h1>
       <p className="text-slate-500 mb-4">
-        Click any cell to set a worker's proficiency level (1-5) for a step
+        Click any cell to set a worker's proficiency level (1-5) for a step.{" "}
+        <button
+          onClick={() => setShowHelp(!showHelp)}
+          className="text-blue-600 hover:text-blue-800 underline"
+          style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}
+        >
+          {showHelp ? "Hide help" : "How are proficiencies determined?"}
+        </button>
       </p>
+
+      {showHelp && (
+        <div
+          style={{
+            backgroundColor: "#f8fafc",
+            border: "1px solid #e2e8f0",
+            borderRadius: 8,
+            padding: 16,
+            marginBottom: 16,
+          }}
+        >
+          <h3 style={{ margin: "0 0 12px 0", fontSize: 16, fontWeight: 600 }}>
+            How Proficiencies Work
+          </h3>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+            <div>
+              <h4 style={{ margin: "0 0 8px 0", fontSize: 14, fontWeight: 600, color: "#475569" }}>
+                Proficiency Levels & Time Multipliers
+              </h4>
+              <p style={{ fontSize: 13, color: "#64748b", marginBottom: 8 }}>
+                Each level affects estimated task duration:
+              </p>
+              <table style={{ fontSize: 13, borderCollapse: "collapse" }}>
+                <tbody>
+                  {[1, 2, 3, 4, 5].map((level) => (
+                    <tr key={level}>
+                      <td style={{ padding: "4px 12px 4px 0" }}>
+                        <span
+                          style={{
+                            display: "inline-block",
+                            width: 20,
+                            height: 20,
+                            backgroundColor: LEVEL_COLORS[level],
+                            color: LEVEL_TEXT_COLORS[level],
+                            borderRadius: 4,
+                            textAlign: "center",
+                            fontWeight: 600,
+                            fontSize: 12,
+                            lineHeight: "20px",
+                            marginRight: 8,
+                          }}
+                        >
+                          {level}
+                        </span>
+                        {LEVEL_LABELS[level]}
+                      </td>
+                      <td style={{ padding: "4px 0", color: "#64748b" }}>
+                        {LEVEL_MULTIPLIERS[level]}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div>
+              <h4 style={{ margin: "0 0 8px 0", fontSize: 14, fontWeight: 600, color: "#475569" }}>
+                How Proficiencies Are Set
+              </h4>
+              <p style={{ fontSize: 13, color: "#64748b", marginBottom: 12 }}>
+                <strong>Manual:</strong> Click any cell in the matrix to set a level directly.
+              </p>
+              <p style={{ fontSize: 13, color: "#64748b", marginBottom: 12 }}>
+                <strong>Automatic:</strong> Based on performance over time. Requires at least 5
+                completed tasks for a worker-step pair in the last 30 days.
+              </p>
+              <ul style={{ fontSize: 13, color: "#64748b", margin: 0, paddingLeft: 20 }}>
+                <li>
+                  <strong>Auto-increase:</strong> If average efficiency &gt; 120%
+                </li>
+                <li>
+                  <strong>Auto-decrease:</strong> If average efficiency &lt; 80%
+                </li>
+              </ul>
+              <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 12, marginBottom: 0 }}>
+                Efficiency = (expected time / actual time) × 100
+              </p>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid #e2e8f0" }}>
+            <h4 style={{ margin: "0 0 8px 0", fontSize: 14, fontWeight: 600, color: "#475569" }}>
+              How Proficiencies Are Used
+            </h4>
+            <div style={{ fontSize: 13, color: "#64748b", display: "flex", gap: 24 }}>
+              <div>
+                <strong>Scheduling:</strong> Higher proficiency workers are prioritized for tasks.
+              </div>
+              <div>
+                <strong>Time Estimation:</strong> Multipliers adjust expected task duration.
+              </div>
+              <div>
+                <strong>Analytics:</strong> Performance compared against proficiency expectations.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="matrix-toolbar">
         <select

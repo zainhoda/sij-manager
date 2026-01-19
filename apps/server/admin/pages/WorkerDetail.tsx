@@ -9,6 +9,7 @@ import {
   BarChart3,
   User,
 } from "lucide-react";
+import ProductionChart from "../components/ProductionChart";
 
 interface WorkerStats {
   worker: {
@@ -75,17 +76,24 @@ const LEVEL_TEXT_COLORS: Record<number, string> = {
   5: "#15803d",
 };
 
+const PERIOD_OPTIONS = [
+  { value: 7, label: "7 days" },
+  { value: 30, label: "30 days" },
+  { value: 90, label: "90 days" },
+] as const;
+
 export default function WorkerDetail() {
   const params = useParams<{ id: string }>();
   const workerId = params.id;
   const [data, setData] = useState<WorkerStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [days, setDays] = useState(30);
 
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const response = await fetch(`/api/workers/${workerId}/stats`);
+        const response = await fetch(`/api/workers/${workerId}/stats?days=${days}`);
         if (!response.ok) throw new Error("Failed to fetch worker stats");
         const json = await response.json();
         setData(json);
@@ -96,7 +104,7 @@ export default function WorkerDetail() {
       }
     };
     fetchStats();
-  }, [workerId]);
+  }, [workerId, days]);
 
   if (loading) {
     return (
@@ -124,38 +132,54 @@ export default function WorkerDetail() {
     ? Math.round((stats.total_output / teamAverages.avg_output) * 100)
     : 100;
 
-  const maxDailyOutput = Math.max(...dailyProduction.map((d) => d.output), 1);
-
   return (
     <div className="page">
       {/* Header */}
-      <div className="flex items-center gap-4 mb-6">
-        <Link
-          href="/workers"
-          className="p-2 rounded-lg hover:bg-slate-100 text-slate-500"
-        >
-          <ArrowLeft size={20} />
-        </Link>
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-3">
-            <User className="text-slate-400" size={28} />
-            {worker.name}
-          </h1>
-          <p className="text-slate-500">
-            {worker.employee_id && `ID: ${worker.employee_id} · `}
-            <span
-              className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
-                worker.status === "active"
-                  ? "bg-green-100 text-green-700"
-                  : worker.status === "on_leave"
-                  ? "bg-yellow-100 text-yellow-700"
-                  : "bg-slate-100 text-slate-600"
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-4">
+          <Link
+            href="/workers"
+            className="p-2 rounded-lg hover:bg-slate-100 text-slate-500"
+          >
+            <ArrowLeft size={20} />
+          </Link>
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-3">
+              <User className="text-slate-400" size={28} />
+              {worker.name}
+            </h1>
+            <p className="text-slate-500">
+              {worker.employee_id && `ID: ${worker.employee_id} · `}
+              <span
+                className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+                  worker.status === "active"
+                    ? "bg-green-100 text-green-700"
+                    : worker.status === "on_leave"
+                    ? "bg-yellow-100 text-yellow-700"
+                    : "bg-slate-100 text-slate-600"
+                }`}
+              >
+                {worker.status.replace("_", " ")}
+              </span>
+              {worker.cost_per_hour > 0 && ` · $${worker.cost_per_hour.toFixed(2)}/hr`}
+            </p>
+          </div>
+        </div>
+        {/* Period Toggle */}
+        <div className="flex items-center bg-slate-100 rounded-lg p-1">
+          {PERIOD_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              onClick={() => setDays(option.value)}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                days === option.value
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
               }`}
             >
-              {worker.status.replace("_", " ")}
-            </span>
-            {worker.cost_per_hour > 0 && ` · $${worker.cost_per_hour.toFixed(2)}/hr`}
-          </p>
+              {option.label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -222,30 +246,9 @@ export default function WorkerDetail() {
           <h2 className="text-lg font-semibold text-slate-900 mb-4">
             Recent Production
           </h2>
-          {dailyProduction.length === 0 ? (
-            <p className="text-slate-500 py-8 text-center">No production data</p>
-          ) : (
-            <div className="flex items-end justify-between gap-2 h-40">
-              {dailyProduction.map((day) => {
-                const height = (day.output / maxDailyOutput) * 100;
-                return (
-                  <div key={day.date} className="flex-1 flex flex-col items-center gap-1">
-                    <span className="text-xs text-slate-500">{day.output}</span>
-                    <div
-                      className="w-full bg-blue-500 rounded-t"
-                      style={{ height: `${Math.max(height, 4)}%` }}
-                    />
-                    <span className="text-[10px] text-slate-400">
-                      {new Date(day.date).toLocaleDateString("en-US", {
-                        month: "short",
-                        day: "numeric",
-                      })}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          <ProductionChart
+            data={dailyProduction.map(d => ({ date: d.date, value: d.output }))}
+          />
         </div>
 
         {/* Proficiencies */}

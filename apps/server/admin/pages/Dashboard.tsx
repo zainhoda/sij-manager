@@ -10,6 +10,7 @@ import {
   CheckCircle,
   RefreshCw,
 } from "lucide-react";
+import ProductionChart from "../components/ProductionChart";
 
 interface DashboardOrder {
   id: number;
@@ -76,7 +77,7 @@ export default function Dashboard() {
     }
   };
 
-  // Initial load: auto-switch to yesterday if no production today
+  // Initial load: auto-switch to last business day if no production today
   useEffect(() => {
     const init = async () => {
       const result = await fetchDashboard("today");
@@ -138,8 +139,6 @@ export default function Dashboard() {
     ? Math.round((unitsDiff / data.unitsYesterday) * 100)
     : 0;
 
-  const maxDailyUnits = Math.max(...data.dailyProduction.map(d => d.units), 1);
-
   return (
     <div className="space-y-8">
       {/* Header */}
@@ -169,7 +168,7 @@ export default function Dashboard() {
                   : "text-slate-600 hover:text-slate-900"
               }`}
             >
-              Yesterday
+              Last Business Day
             </button>
           </div>
           <div className="flex items-center gap-2 text-sm text-slate-500">
@@ -193,7 +192,7 @@ export default function Dashboard() {
           </p>
         </div>
 
-        {/* Step Completions Today/Yesterday */}
+        {/* Step Completions */}
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 hover:shadow-md transition-shadow">
           <div className="flex items-center justify-between mb-4">
             <span className="text-sm font-semibold text-slate-500 uppercase tracking-wide">
@@ -212,7 +211,7 @@ export default function Dashboard() {
             ) : (
               <span className="text-red-600 font-medium">{unitsDiff} ({unitsDiffPercent}%)</span>
             )}
-            <span className="text-slate-500"> vs {selectedPeriod === "today" ? "yesterday" : "day before"}</span>
+            <span className="text-slate-500"> vs {selectedPeriod === "today" ? "last business day" : "prior day"}</span>
           </p>
         </div>
 
@@ -356,13 +355,13 @@ export default function Dashboard() {
         {/* Top Workers */}
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
           <h2 className="text-lg font-bold text-slate-900 mb-6">
-            Top Performers {selectedPeriod === "today" ? "Today" : "Yesterday"}
+            Top Performers {selectedPeriod === "today" ? "Today" : "Last Business Day"}
           </h2>
 
           {data.topWorkers.length === 0 ? (
             <div className="text-center py-12 text-slate-500">
               <Users className="w-12 h-12 mx-auto mb-3 opacity-50" />
-              <p>No activity {selectedPeriod === "today" ? "yet today" : "yesterday"}</p>
+              <p>No activity {selectedPeriod === "today" ? "yet today" : "that day"}</p>
             </div>
           ) : (
             <div className="space-y-4">
@@ -397,38 +396,9 @@ export default function Dashboard() {
       {/* Production Chart */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
         <h2 className="text-lg font-bold text-slate-900 mb-6">7-Day Production <span className="text-sm font-normal text-slate-500">(step completions)</span></h2>
-
-        {data.dailyProduction.length === 0 ? (
-          <div className="text-center py-12 text-slate-500">
-            <TrendingUp className="w-12 h-12 mx-auto mb-3 opacity-50" />
-            <p>No production data</p>
-          </div>
-        ) : (
-          <div className="flex items-end justify-between gap-3">
-            {data.dailyProduction.map((day, index) => {
-              const height = maxDailyUnits > 0 ? (day.units / maxDailyUnits) * 100 : 0;
-              const isToday = index === data.dailyProduction.length - 1;
-              const barHeight = Math.max(height, 4) * 1.4; // Scale to max ~140px
-
-              return (
-                <div key={day.date} className="flex-1 flex flex-col items-center gap-2">
-                  <span className="text-xs text-slate-500 font-medium">
-                    {day.units.toLocaleString()}
-                  </span>
-                  <div
-                    className={`w-full rounded-t-lg transition-all duration-500 ${
-                      isToday ? 'bg-blue-500' : 'bg-slate-200 hover:bg-slate-300'
-                    }`}
-                    style={{ height: barHeight }}
-                  />
-                  <span className={`text-xs font-medium ${isToday ? 'text-blue-600' : 'text-slate-500'}`}>
-                    {day.dayName}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        )}
+        <ProductionChart
+          data={data.dailyProduction.map(d => ({ date: d.date, value: d.units, dayName: d.dayName }))}
+        />
       </div>
     </div>
   );

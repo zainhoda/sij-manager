@@ -4,7 +4,7 @@ Convert Equipment Matrix from Excel to worker-equipment.csv format.
 """
 import pandas as pd
 
-EXCEL_FILE = "Tenjam White 01142026.xlsx"
+EXCEL_FILE = "Tenjam White 01172026.xlsx"
 OUTPUT_FILE = "apps/server/sample-data/tenjam/tenjam-worker-equipment.csv"
 
 # Worker name mappings (clean up temp prefixes)

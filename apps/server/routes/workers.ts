@@ -89,7 +89,8 @@ export async function handleWorkers(request: Request): Promise<Response | null> 
   // GET /api/workers/:id/stats - get detailed stats for worker
   const statsMatch = url.pathname.match(/^\/api\/workers\/(\d+)\/stats$/);
   if (statsMatch && request.method === "GET") {
-    return handleWorkerStats(parseInt(statsMatch[1]!));
+    const days = parseInt(url.searchParams.get("days") || "30");
+    return handleWorkerStats(parseInt(statsMatch[1]!), days);
   }
 
   // GET /api/workers/:id/certifications - get certifications for worker
@@ -320,7 +321,7 @@ async function handleDeleteWorker(workerId: number): Promise<Response> {
   return Response.json({ success: true });
 }
 
-async function handleWorkerStats(workerId: number): Promise<Response> {
+async function handleWorkerStats(workerId: number, days: number = 30): Promise<Response> {
   // Get worker basic info
   const workerResult = await db.execute({
     sql: `
@@ -474,12 +475,11 @@ async function handleWorkerStats(workerId: number): Promise<Response> {
       WHERE twa.worker_id = ?
         AND twa.status = 'completed'
         AND twa.actual_start_time IS NOT NULL
-        AND date(twa.actual_start_time) >= date('now', '-30 days')
+        AND date(twa.actual_start_time) >= date('now', '-' || ? || ' days')
       GROUP BY date(twa.actual_start_time)
-      ORDER BY date(twa.actual_start_time) DESC
-      LIMIT 14
+      ORDER BY date(twa.actual_start_time) ASC
     `,
-    args: [workerId]
+    args: [workerId, days]
   });
   const dailyProduction = dailyProductionResult.rows as unknown as {
     date: string;

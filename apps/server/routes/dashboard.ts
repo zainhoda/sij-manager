@@ -75,8 +75,25 @@ export async function handleDashboard(request: Request): Promise<Response | null
 
 async function getDashboardData(period: "today" | "yesterday" = "today"): Promise<DashboardData> {
   const today = new Date().toISOString().split("T")[0]!;
-  const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0]!;
-  const targetDate = period === "yesterday" ? yesterday : today;
+
+  // Find the last business day with data (most recent date before today with production)
+  const lastDataDayResult = await db.execute({
+    sql: `
+      SELECT se.date
+      FROM schedule_entries se
+      JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
+      WHERE se.date < ? AND twa.actual_output > 0
+      GROUP BY se.date
+      ORDER BY se.date DESC
+      LIMIT 1
+    `,
+    args: [today]
+  });
+  const lastBusinessDay = lastDataDayResult.rows.length > 0
+    ? (lastDataDayResult.rows[0] as unknown as { date: string }).date
+    : new Date(Date.now() - 86400000).toISOString().split("T")[0]!;
+
+  const targetDate = period === "yesterday" ? lastBusinessDay : today;
   const weekFromNow = new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0]!;
   const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().split("T")[0]!;
 
@@ -105,10 +122,29 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
   });
   const unitsToday = (unitsTodayResult.rows[0] as unknown as { units: number })?.units ?? 0;
 
-  // Get units produced for comparison period (day before target)
-  const comparisonDate = period === "yesterday"
-    ? new Date(Date.now() - 2 * 86400000).toISOString().split("T")[0]!
-    : yesterday;
+  // Get units produced for comparison period (day before target with data)
+  let comparisonDate: string;
+  if (period === "yesterday") {
+    // Find the day before lastBusinessDay that has data
+    const comparisonResult = await db.execute({
+      sql: `
+        SELECT se.date
+        FROM schedule_entries se
+        JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
+        WHERE se.date < ? AND twa.actual_output > 0
+        GROUP BY se.date
+        ORDER BY se.date DESC
+        LIMIT 1
+      `,
+      args: [lastBusinessDay]
+    });
+    comparisonDate = comparisonResult.rows.length > 0
+      ? (comparisonResult.rows[0] as unknown as { date: string }).date
+      : lastBusinessDay;
+  } else {
+    // For today, compare to last business day
+    comparisonDate = lastBusinessDay;
+  }
   const unitsYesterdayResult = await db.execute({
     sql: `
       SELECT COALESCE(SUM(twa.actual_output), 0) as units
