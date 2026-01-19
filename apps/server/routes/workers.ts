@@ -458,34 +458,44 @@ async function handleWorkerStats(workerId: number, days: number = 30): Promise<R
     equipment_name: string;
   }[];
 
-  // Get daily production for recent days
+  // Get daily production for recent days (use se.date like dashboard for consistency)
+  const daysAgo = new Date(Date.now() - days * 86400000).toISOString().split("T")[0]!;
   const dailyProductionResult = await db.execute({
     sql: `
       SELECT
-        date(twa.actual_start_time) as date,
-        SUM(twa.actual_output) as output,
-        SUM(
+        se.date,
+        COALESCE(SUM(twa.actual_output), 0) as output,
+        COALESCE(SUM(
           CASE
             WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
             THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
             ELSE 0
           END
-        ) as hours
-      FROM task_worker_assignments twa
+        ), 0) as hours
+      FROM schedule_entries se
+      JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
       WHERE twa.worker_id = ?
         AND twa.status = 'completed'
-        AND twa.actual_start_time IS NOT NULL
-        AND date(twa.actual_start_time) >= date('now', '-' || ? || ' days')
-      GROUP BY date(twa.actual_start_time)
-      ORDER BY date(twa.actual_start_time) ASC
+        AND se.date >= ?
+      GROUP BY se.date
+      ORDER BY se.date ASC
     `,
-    args: [workerId, days]
+    args: [workerId, daysAgo]
   });
-  const dailyProduction = dailyProductionResult.rows as unknown as {
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const dailyProduction = (dailyProductionResult.rows as unknown as {
     date: string;
     output: number;
     hours: number;
-  }[];
+  }[]).map(row => {
+    // Parse date as local time to get correct day name
+    const [year, month, day] = row.date.split('-').map(Number);
+    const dateObj = new Date(year!, month! - 1, day!);
+    return {
+      ...row,
+      dayName: dayNames[dateObj.getDay()]!
+    };
+  });
 
   // Calculate team averages for comparison
   const teamAveragesResult = await db.execute({
@@ -537,6 +547,6 @@ async function handleWorkerStats(workerId: number, days: number = 30): Promise<R
     stepPerformance,
     proficiencies,
     certifications,
-    dailyProduction: dailyProduction.reverse(),
+    dailyProduction,
   });
 }

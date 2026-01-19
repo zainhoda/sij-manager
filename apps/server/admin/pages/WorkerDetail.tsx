@@ -57,6 +57,7 @@ interface WorkerStats {
     date: string;
     output: number;
     hours: number;
+    dayName: string;
   }[];
 }
 
@@ -247,7 +248,7 @@ export default function WorkerDetail() {
             Recent Production
           </h2>
           <ProductionChart
-            data={dailyProduction.map(d => ({ date: d.date, value: d.output }))}
+            data={dailyProduction.map(d => ({ date: d.date, value: d.output, dayName: d.dayName }))}
           />
         </div>
 

@@ -358,11 +358,16 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
   const dailyProduction: DailyProduction[] = (dailyResult.rows as unknown as {
     date: string;
     units: number;
-  }[]).map(row => ({
-    date: row.date,
-    units: row.units,
-    dayName: dayNames[new Date(row.date).getDay()]!
-  }));
+  }[]).map(row => {
+    // Parse date as local time to get correct day name
+    const [year, month, day] = row.date.split('-').map(Number);
+    const dateObj = new Date(year!, month! - 1, day!);
+    return {
+      date: row.date,
+      units: row.units,
+      dayName: dayNames[dateObj.getDay()]!
+    };
+  });
 
   // Get actual today's units (for auto-detect logic in frontend)
   let actualUnitsToday = unitsToday;
