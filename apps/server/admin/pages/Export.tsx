@@ -19,17 +19,17 @@ const exportOptions: ExportOption[] = [
   },
   {
     id: "products",
-    title: "Products",
-    description: "Export products with build versions, steps, and dependencies",
+    title: "BOMs & Steps",
+    description: "Export BOM step configurations with steps and dependencies",
     endpoint: "/api/exports/products",
-    filename: "products.csv",
+    filename: "bom-steps.csv",
   },
   {
     id: "orders",
-    title: "Orders",
-    description: "Export all orders with product names, quantities, and due dates",
+    title: "Demand Entries",
+    description: "Export all demand entries with BOM numbers, quantities, and due dates",
     endpoint: "/api/exports/orders",
-    filename: "orders.csv",
+    filename: "demand-entries.csv",
   },
   {
     id: "production-history",

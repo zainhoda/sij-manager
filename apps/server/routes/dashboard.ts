@@ -1,19 +1,24 @@
 /**
  * Dashboard API - aggregated metrics for the hero dashboard
+ * Uses NEW schema: demand_entries, plan_tasks, task_assignments, production_history
  */
 import { db } from "../db";
 
-interface DashboardOrder {
+interface DashboardDemand {
   id: number;
-  productName: string;
+  fishbowlBomNum: string;
+  productName: string;  // Alias for fishbowlBomNum for frontend compatibility
   quantity: number;
+  quantityCompleted: number;
   dueDate: string;
+  startDate: string | null;
+  estimatedCompletionDate: string | null;
   status: string;
   progressPercent: number;
   daysUntilDue: number;
-  startDate: string | null;
-  estimatedCompletionDate: string | null;
   isOnTrack: boolean;
+  customerName: string | null;
+  color: string | null;
 }
 
 interface TopWorker {
@@ -30,7 +35,7 @@ interface DailyProduction {
 }
 
 interface DashboardData {
-  // Hero KPIs
+  // Hero KPIs (using old names for frontend compatibility)
   activeOrders: number;
   ordersDueThisWeek: number;
   unitsToday: number;
@@ -39,8 +44,8 @@ interface DashboardData {
   workersActiveToday: number;
   totalWorkers: number;
 
-  // Order progress
-  orders: DashboardOrder[];
+  // Order/Demand progress (using old name for frontend compatibility)
+  orders: DashboardDemand[];
 
   // Top performers
   topWorkers: TopWorker[];
@@ -50,7 +55,7 @@ interface DashboardData {
 
   // Period info for auto-switching
   period: "today" | "yesterday";
-  actualUnitsToday: number; // Always today's units, used for auto-detect
+  actualUnitsToday: number;
 
   // Metadata
   lastUpdated: string;
@@ -76,15 +81,14 @@ export async function handleDashboard(request: Request): Promise<Response | null
 async function getDashboardData(period: "today" | "yesterday" = "today"): Promise<DashboardData> {
   const today = new Date().toISOString().split("T")[0]!;
 
-  // Find the last business day with data (most recent date before today with production)
+  // Find the last day with production data (before today)
   const lastDataDayResult = await db.execute({
     sql: `
-      SELECT se.date
-      FROM schedule_entries se
-      JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-      WHERE se.date < ? AND twa.actual_output > 0
-      GROUP BY se.date
-      ORDER BY se.date DESC
+      SELECT date
+      FROM production_history
+      WHERE date < ?
+      GROUP BY date
+      ORDER BY date DESC
       LIMIT 1
     `,
     args: [today]
@@ -97,43 +101,40 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
   const weekFromNow = new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0]!;
   const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().split("T")[0]!;
 
-  // Get active orders count
-  const activeOrdersResult = await db.execute(`
-    SELECT COUNT(*) as count FROM orders WHERE status IN ('pending', 'scheduled', 'in_progress')
+  // Get active demand count
+  const activeDemandResult = await db.execute(`
+    SELECT COUNT(*) as count FROM demand_entries WHERE status IN ('pending', 'planned', 'in_progress')
   `);
-  const activeOrders = (activeOrdersResult.rows[0] as unknown as { count: number })?.count ?? 0;
+  const activeDemand = (activeDemandResult.rows[0] as unknown as { count: number })?.count ?? 0;
 
-  // Get orders due this week
-  const ordersDueResult = await db.execute({
-    sql: `SELECT COUNT(*) as count FROM orders WHERE status != 'completed' AND due_date <= ?`,
+  // Get demand due this week
+  const demandDueResult = await db.execute({
+    sql: `SELECT COUNT(*) as count FROM demand_entries WHERE status NOT IN ('completed', 'cancelled') AND due_date <= ?`,
     args: [weekFromNow]
   });
-  const ordersDueThisWeek = (ordersDueResult.rows[0] as unknown as { count: number })?.count ?? 0;
+  const demandDueThisWeek = (demandDueResult.rows[0] as unknown as { count: number })?.count ?? 0;
 
-  // Get units produced for target period
+  // Get units produced for target period (from production_history)
   const unitsTodayResult = await db.execute({
     sql: `
-      SELECT COALESCE(SUM(twa.actual_output), 0) as units
-      FROM task_worker_assignments twa
-      JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-      WHERE se.date = ?
+      SELECT COALESCE(SUM(units_produced), 0) as units
+      FROM production_history
+      WHERE date = ?
     `,
     args: [targetDate]
   });
   const unitsToday = (unitsTodayResult.rows[0] as unknown as { units: number })?.units ?? 0;
 
-  // Get units produced for comparison period (day before target with data)
+  // Get units for comparison period
   let comparisonDate: string;
   if (period === "yesterday") {
-    // Find the day before lastBusinessDay that has data
     const comparisonResult = await db.execute({
       sql: `
-        SELECT se.date
-        FROM schedule_entries se
-        JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-        WHERE se.date < ? AND twa.actual_output > 0
-        GROUP BY se.date
-        ORDER BY se.date DESC
+        SELECT date
+        FROM production_history
+        WHERE date < ?
+        GROUP BY date
+        ORDER BY date DESC
         LIMIT 1
       `,
       args: [lastBusinessDay]
@@ -142,49 +143,40 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
       ? (comparisonResult.rows[0] as unknown as { date: string }).date
       : lastBusinessDay;
   } else {
-    // For today, compare to last business day
     comparisonDate = lastBusinessDay;
   }
   const unitsYesterdayResult = await db.execute({
     sql: `
-      SELECT COALESCE(SUM(twa.actual_output), 0) as units
-      FROM task_worker_assignments twa
-      JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-      WHERE se.date = ?
+      SELECT COALESCE(SUM(units_produced), 0) as units
+      FROM production_history
+      WHERE date = ?
     `,
     args: [comparisonDate]
   });
   const unitsYesterday = (unitsYesterdayResult.rows[0] as unknown as { units: number })?.units ?? 0;
 
-  // Get average efficiency (last 7 days)
+  // Get average efficiency (last 7 days from production_history)
   const efficiencyResult = await db.execute({
     sql: `
       SELECT
-        COALESCE(SUM(ps.time_per_piece_seconds * twa.actual_output / 3600.0), 0) as expected_hours,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-          ELSE 0 END
-        ), 0) as actual_hours
-      FROM task_worker_assignments twa
-      JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-      JOIN product_steps ps ON se.product_step_id = ps.id
-      WHERE se.date >= ? AND twa.actual_output > 0
+        COALESCE(SUM(expected_seconds), 0) as expected_seconds,
+        COALESCE(SUM(actual_seconds), 0) as actual_seconds
+      FROM production_history
+      WHERE date >= ?
     `,
     args: [sevenDaysAgo]
   });
-  const effRow = efficiencyResult.rows[0] as unknown as { expected_hours: number; actual_hours: number };
-  const avgEfficiency = effRow?.actual_hours > 0
-    ? Math.round((effRow.expected_hours / effRow.actual_hours) * 100)
+  const effRow = efficiencyResult.rows[0] as unknown as { expected_seconds: number; actual_seconds: number };
+  const avgEfficiency = effRow?.actual_seconds > 0
+    ? Math.round((effRow.expected_seconds / effRow.actual_seconds) * 100)
     : 0;
 
   // Get workers active for target period
   const workersActiveTodayResult = await db.execute({
     sql: `
-      SELECT COUNT(DISTINCT twa.worker_id) as count
-      FROM task_worker_assignments twa
-      JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-      WHERE se.date = ? AND twa.actual_output > 0
+      SELECT COUNT(DISTINCT worker_id) as count
+      FROM production_history
+      WHERE date = ?
     `,
     args: [targetDate]
   });
@@ -196,130 +188,85 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
   `);
   const totalWorkers = (totalWorkersResult.rows[0] as unknown as { count: number })?.count ?? 0;
 
-  // Get order progress for active orders using step completions percentage
-  // (same calculation as Production Summary "vs. Act. Eff.")
-  const ordersResult = await db.execute(`
+  // Get demand progress (top 10 active)
+  const demandsResult = await db.execute(`
     SELECT
-      o.id,
-      p.name as product_name,
-      o.quantity,
-      o.due_date,
-      o.status,
-      -- Total step completions (actual_output across all steps)
-      COALESCE(
-        (SELECT SUM(twa.actual_output)
-         FROM task_worker_assignments twa
-         JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-         JOIN schedules s ON se.schedule_id = s.id
-         WHERE s.order_id = o.id
-        ), 0
-      ) as total_step_completions,
-      -- Number of steps in the build version
-      COALESCE(
-        (SELECT COUNT(DISTINCT bvs.product_step_id)
-         FROM schedules s
-         JOIN build_version_steps bvs ON bvs.build_version_id = s.build_version_id
-         WHERE s.order_id = o.id
-        ), 1
-      ) as num_steps,
-      -- Start date (first date when actual work was logged)
-      (SELECT MIN(se.date)
-       FROM schedule_entries se
-       JOIN schedules s ON se.schedule_id = s.id
-       JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-       WHERE s.order_id = o.id AND twa.actual_output > 0
-      ) as start_date,
-      -- Total hours worked on this order
-      COALESCE(
-        (SELECT SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-          ELSE 0 END
-        )
-        FROM task_worker_assignments twa
-        JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-        JOIN schedules s ON se.schedule_id = s.id
-        WHERE s.order_id = o.id
-        ), 0
-      ) as total_hours
-    FROM orders o
-    JOIN products p ON o.product_id = p.id
-    WHERE o.status IN ('pending', 'scheduled', 'in_progress')
-    ORDER BY o.due_date ASC
+      id,
+      fishbowl_bom_num,
+      quantity,
+      quantity_completed,
+      due_date,
+      status,
+      customer_name,
+      color
+    FROM demand_entries
+    WHERE status IN ('pending', 'planned', 'in_progress')
+    ORDER BY due_date ASC
     LIMIT 10
   `);
 
-  const orders: DashboardOrder[] = (ordersResult.rows as unknown as {
+  const demands: DashboardDemand[] = (demandsResult.rows as unknown as {
     id: number;
-    product_name: string;
+    fishbowl_bom_num: string;
     quantity: number;
+    quantity_completed: number;
     due_date: string;
     status: string;
-    total_step_completions: number;
-    num_steps: number;
-    start_date: string | null;
-    total_hours: number;
+    customer_name: string | null;
+    color: string | null;
   }[]).map(row => {
     const dueDate = new Date(row.due_date);
     const now = new Date();
     const daysUntilDue = Math.ceil((dueDate.getTime() - now.getTime()) / 86400000);
-
-    // Progress = step completions / total step completions needed
-    const totalStepCompletionsNeeded = row.quantity * row.num_steps;
-    const progressPercent = totalStepCompletionsNeeded > 0
-      ? Math.round((row.total_step_completions / totalStepCompletionsNeeded) * 100)
+    const progressPercent = row.quantity > 0
+      ? Math.round((row.quantity_completed / row.quantity) * 100)
       : 0;
 
-    // Calculate estimated completion date based on actual pace
-    let estimatedCompletionDate: string | null = null;
-    if (row.total_step_completions > 0 && row.total_hours > 0) {
-      const hoursPerCompletion = row.total_hours / row.total_step_completions;
-      const remainingCompletions = totalStepCompletionsNeeded - row.total_step_completions;
-      const remainingHours = remainingCompletions * hoursPerCompletion;
-      // Assume ~8 working hours per day
-      const remainingDays = Math.ceil(remainingHours / 8);
-      const estDate = new Date();
-      estDate.setDate(estDate.getDate() + remainingDays);
-      estimatedCompletionDate = estDate.toISOString().split('T')[0]!;
-    }
+    // Determine if on track: complete or enough time remaining for remaining work
+    const remainingPercent = 100 - progressPercent;
+    const isOnTrack = progressPercent >= 100 || daysUntilDue >= Math.ceil(remainingPercent / 20); // ~20% per day heuristic
 
-    const isOnTrack = estimatedCompletionDate
-      ? new Date(estimatedCompletionDate) <= dueDate
-      : true; // No data yet, assume on track
+    // Estimate completion based on current progress rate (simplified)
+    let estimatedCompletionDate: string | null = null;
+    if (progressPercent > 0 && progressPercent < 100) {
+      const daysPerPercent = 1 / 20; // ~5 days for 100%
+      const daysRemaining = remainingPercent * daysPerPercent;
+      const estDate = new Date(now.getTime() + daysRemaining * 86400000);
+      estimatedCompletionDate = estDate.toISOString().split("T")[0]!;
+    } else if (progressPercent >= 100) {
+      estimatedCompletionDate = now.toISOString().split("T")[0]!;
+    }
 
     return {
       id: row.id,
-      productName: row.product_name,
+      fishbowlBomNum: row.fishbowl_bom_num,
+      productName: row.fishbowl_bom_num,  // Use BOM num as product name
       quantity: row.quantity,
+      quantityCompleted: row.quantity_completed,
       dueDate: row.due_date,
+      startDate: null,  // Not tracked in demand_entries
+      estimatedCompletionDate,
       status: row.status,
       progressPercent,
       daysUntilDue,
-      startDate: row.start_date,
-      estimatedCompletionDate,
-      isOnTrack
+      isOnTrack,
+      customerName: row.customer_name,
+      color: row.color,
     };
   });
 
-  // Get top workers for target period
+  // Get top workers for target period (from production_history)
   const topWorkersResult = await db.execute({
     sql: `
       SELECT
-        w.id,
-        w.name,
-        COALESCE(SUM(twa.actual_output), 0) as units_today,
-        COALESCE(SUM(ps.time_per_piece_seconds * twa.actual_output / 3600.0), 0) as expected_hours,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-          ELSE 0 END
-        ), 0) as actual_hours
-      FROM workers w
-      JOIN task_worker_assignments twa ON twa.worker_id = w.id
-      JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-      JOIN product_steps ps ON se.product_step_id = ps.id
-      WHERE se.date = ? AND twa.actual_output > 0
-      GROUP BY w.id, w.name
+        worker_id,
+        worker_name,
+        SUM(units_produced) as units_today,
+        SUM(expected_seconds) as expected_seconds,
+        SUM(actual_seconds) as actual_seconds
+      FROM production_history
+      WHERE date = ?
+      GROUP BY worker_id, worker_name
       ORDER BY units_today DESC
       LIMIT 5
     `,
@@ -327,29 +274,28 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
   });
 
   const topWorkers: TopWorker[] = (topWorkersResult.rows as unknown as {
-    id: number;
-    name: string;
+    worker_id: number;
+    worker_name: string;
     units_today: number;
-    expected_hours: number;
-    actual_hours: number;
+    expected_seconds: number;
+    actual_seconds: number;
   }[]).map(row => ({
-    id: row.id,
-    name: row.name,
+    id: row.worker_id,
+    name: row.worker_name,
     unitsToday: row.units_today,
-    efficiency: row.actual_hours > 0 ? Math.round((row.expected_hours / row.actual_hours) * 100) : 0
+    efficiency: row.actual_seconds > 0 ? Math.round((row.expected_seconds / row.actual_seconds) * 100) : 0
   }));
 
   // Get daily production for last 7 days
   const dailyResult = await db.execute({
     sql: `
       SELECT
-        se.date,
-        COALESCE(SUM(twa.actual_output), 0) as units
-      FROM schedule_entries se
-      LEFT JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-      WHERE se.date >= ?
-      GROUP BY se.date
-      ORDER BY se.date ASC
+        date,
+        COALESCE(SUM(units_produced), 0) as units
+      FROM production_history
+      WHERE date >= ?
+      GROUP BY date
+      ORDER BY date ASC
     `,
     args: [sevenDaysAgo]
   });
@@ -359,7 +305,6 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
     date: string;
     units: number;
   }[]).map(row => {
-    // Parse date as local time to get correct day name
     const [year, month, day] = row.date.split('-').map(Number);
     const dateObj = new Date(year!, month! - 1, day!);
     return {
@@ -374,10 +319,9 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
   if (period === "yesterday") {
     const actualTodayResult = await db.execute({
       sql: `
-        SELECT COALESCE(SUM(twa.actual_output), 0) as units
-        FROM task_worker_assignments twa
-        JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-        WHERE se.date = ?
+        SELECT COALESCE(SUM(units_produced), 0) as units
+        FROM production_history
+        WHERE date = ?
       `,
       args: [today]
     });
@@ -385,14 +329,14 @@ async function getDashboardData(period: "today" | "yesterday" = "today"): Promis
   }
 
   return {
-    activeOrders,
-    ordersDueThisWeek,
+    activeOrders: activeDemand,
+    ordersDueThisWeek: demandDueThisWeek,
     unitsToday,
     unitsYesterday,
     avgEfficiency,
     workersActiveToday,
     totalWorkers,
-    orders,
+    orders: demands,
     topWorkers,
     dailyProduction,
     period,

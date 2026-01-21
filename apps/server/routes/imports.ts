@@ -1,55 +1,22 @@
 /**
- * Import routes for cold start spreadsheet uploads
+ * Import routes for CSV bulk uploads
+ * Supports NEW schema: bom_steps, demand_entries, production_history
+ * Plus existing: equipment, workers, work_categories, certifications
  */
 
 import { db } from "../db";
-import {
-  parseEquipmentMatrix,
-  parseProductSteps,
-  parseProductionData,
-  parseProducts,
-  parseOrders,
-  parseProductionDataV2,
-  type ParsedEquipmentMatrix,
-  type ParsedProductSteps,
-  type ParsedProductionData,
-  type ParsedProducts,
-  type ParsedOrders,
-  type ParsedProductionDataV2,
-} from "../services/import-parsers";
-import {
-  validateEquipmentMatrix,
-  validateProductSteps,
-  validateProductionData,
-  validateProducts,
-  validateOrders,
-  validateProductionDataV2,
-  type ExistingData,
-  type EquipmentMatrixValidationResult,
-  type ProductStepsValidationResult,
-  type ProductionDataExistingData,
-  type ProductionDataValidationResult,
-  type ProductsValidationResult,
-  type OrdersExistingData,
-  type OrdersValidationResult,
-  type ProductionDataV2ExistingData,
-  type ProductionDataV2ValidationResult,
-} from "../services/import-validators";
 
 // Preview token storage (in-memory with TTL)
 interface PreviewData {
-  type: 'equipment-matrix' | 'product-steps' | 'production-data' | 'products' | 'orders' | 'production-history';
-  data: ParsedEquipmentMatrix | ParsedProductSteps | ParsedProductionData | ParsedProducts | ParsedOrders | ParsedProductionDataV2;
-  validation: EquipmentMatrixValidationResult | ProductStepsValidationResult | ProductionDataValidationResult | ProductsValidationResult | OrdersValidationResult | ProductionDataV2ValidationResult;
-  productId?: number;
-  productName?: string;
+  type: 'equipment-matrix' | 'bom-steps' | 'demand' | 'production-history';
+  data: any;
+  validation: any;
   createdAt: number;
 }
 
 const previewStore = new Map<string, PreviewData>();
 const PREVIEW_TTL = 30 * 60 * 1000; // 30 minutes
 
-// Cleanup expired tokens periodically
 function cleanupExpiredTokens() {
   const now = Date.now();
   for (const [token, data] of previewStore) {
@@ -63,1335 +30,872 @@ function generateToken(): string {
   return crypto.randomUUID();
 }
 
-/**
- * Get existing data from database for validation
- */
-async function getExistingData(): Promise<ExistingData> {
-  const [equipmentResult, workersResult, categoriesResult, componentsResult] = await Promise.all([
-    db.execute("SELECT id, name FROM equipment"),
-    db.execute("SELECT id, name FROM workers"),
-    db.execute("SELECT id, name FROM work_categories"),
-    db.execute("SELECT id, name FROM components"),
-  ]);
+function parseCSV(content: string): string[][] {
+  const lines = content.trim().split('\n');
+  return lines.map(line => {
+    // Handle quoted values with commas
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
 
-  const equipment = new Map<string, number>();
-  for (const row of equipmentResult.rows) {
-    equipment.set(row.name as string, row.id as number);
-  }
-
-  const workers = new Map<string, number>();
-  for (const row of workersResult.rows) {
-    workers.set(row.name as string, row.id as number);
-  }
-
-  const workCategories = new Map<string, number>();
-  for (const row of categoriesResult.rows) {
-    workCategories.set(row.name as string, row.id as number);
-  }
-
-  const components = new Map<string, number>();
-  for (const row of componentsResult.rows) {
-    components.set(row.name as string, row.id as number);
-  }
-
-  return { equipment, workers, workCategories, components };
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i]!;
+      if (char === '"') {
+        inQuotes = !inQuotes;
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  });
 }
 
-/**
- * Execute Equipment-Worker Matrix import
- */
-async function executeEquipmentMatrixImport(
-  parsed: ParsedEquipmentMatrix
-): Promise<{ workCategoriesCreated: number; equipmentCreated: number; workersCreated: number; certificationsCreated: number }> {
-  // Get fresh existing data
-  const existing = await getExistingData();
+function parseTSV(content: string): string[][] {
+  const lines = content.trim().split('\n');
+  return lines.map(line => line.split('\t').map(cell => cell.trim()));
+}
 
-  // Track created IDs
-  const categoryIds = new Map<string, number>(existing.workCategories);
-  const equipmentIds = new Map<string, number>(existing.equipment);
-  const workerIds = new Map<string, number>(existing.workers);
+function parseSpreadsheet(content: string): string[][] {
+  // Auto-detect delimiter
+  const firstLine = content.split('\n')[0] || '';
+  if (firstLine.includes('\t')) {
+    return parseTSV(content);
+  }
+  return parseCSV(content);
+}
+
+export async function handleImports(request: Request): Promise<Response | null> {
+  const url = new URL(request.url);
+
+  // Cleanup on each request
+  cleanupExpiredTokens();
+
+  // ============================================================
+  // Equipment Matrix Import (workers, equipment, certifications)
+  // ============================================================
+
+  if (url.pathname === "/api/imports/equipment-matrix/preview" && request.method === "POST") {
+    return handleEquipmentMatrixPreview(request);
+  }
+
+  if (url.pathname === "/api/imports/equipment-matrix/confirm" && request.method === "POST") {
+    return handleEquipmentMatrixConfirm(request);
+  }
+
+  // ============================================================
+  // BOM Steps Import
+  // ============================================================
+
+  if (url.pathname === "/api/imports/bom-steps/preview" && request.method === "POST") {
+    return handleBOMStepsPreview(request);
+  }
+
+  if (url.pathname === "/api/imports/bom-steps/confirm" && request.method === "POST") {
+    return handleBOMStepsConfirm(request);
+  }
+
+  // ============================================================
+  // Demand Import
+  // ============================================================
+
+  if (url.pathname === "/api/imports/demand/preview" && request.method === "POST") {
+    return handleDemandPreview(request);
+  }
+
+  if (url.pathname === "/api/imports/demand/confirm" && request.method === "POST") {
+    return handleDemandConfirm(request);
+  }
+
+  // ============================================================
+  // Production History Import
+  // ============================================================
+
+  if (url.pathname === "/api/imports/production-history/preview" && request.method === "POST") {
+    return handleProductionHistoryPreview(request);
+  }
+
+  if (url.pathname === "/api/imports/production-history/confirm" && request.method === "POST") {
+    return handleProductionHistoryConfirm(request);
+  }
+
+  return null;
+}
+
+// ============================================================
+// Equipment Matrix Import
+// ============================================================
+
+interface ParsedEquipmentMatrix {
+  workCategories: string[];
+  equipment: { name: string; description: string; stationCount: number; workCategoryName: string; hourlyCost: number }[];
+  workers: { name: string; costPerHour: number }[];
+  certifications: { workerName: string; equipmentName: string }[];
+}
+
+async function handleEquipmentMatrixPreview(request: Request): Promise<Response> {
+  let content: string;
+
+  // Support both FormData (file upload) and JSON (paste content)
+  const contentType = request.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    const body = await request.json() as { content?: string; format?: string };
+    if (!body.content) {
+      return Response.json({ error: "No content provided" }, { status: 400 });
+    }
+    content = body.content;
+  } else if (contentType.includes("multipart/form-data")) {
+    const formData = await request.formData();
+    const file = formData.get("file") as File;
+    if (!file) {
+      return Response.json({ error: "No file provided" }, { status: 400 });
+    }
+    content = await file.text();
+  } else {
+    return Response.json({ error: "Invalid content type. Use application/json or multipart/form-data" }, { status: 400 });
+  }
+
+  const rows = parseSpreadsheet(content);
+
+  if (rows.length < 2) {
+    return Response.json({ error: "File must have at least a header row and one data row" }, { status: 400 });
+  }
+
+  const headerRow = rows[0]!;
+  const dataRows = rows.slice(1);
+
+  // Parse the matrix format:
+  // First column: worker names (or empty for equipment rows)
+  // First row: equipment names
+  // Cells: X or checkmark = certified
+
+  const equipment: ParsedEquipmentMatrix['equipment'] = [];
+  const workers: ParsedEquipmentMatrix['workers'] = [];
+  const certifications: ParsedEquipmentMatrix['certifications'] = [];
+  const workCategories = new Set<string>();
+
+  // Extract equipment from header (skip first column which is for worker names)
+  for (let i = 1; i < headerRow.length; i++) {
+    const equipName = headerRow[i]!.trim();
+    if (equipName) {
+      equipment.push({
+        name: equipName,
+        description: '',
+        stationCount: 1,
+        workCategoryName: 'General',
+        hourlyCost: 0
+      });
+      workCategories.add('General');
+    }
+  }
+
+  // Extract workers and certifications from data rows
+  for (const row of dataRows) {
+    const workerName = row[0]?.trim();
+    if (!workerName) continue;
+
+    workers.push({ name: workerName, costPerHour: 25 }); // Default rate
+
+    // Check certifications
+    for (let i = 1; i < row.length && i <= equipment.length; i++) {
+      const cell = row[i]?.trim().toLowerCase();
+      if (cell === 'x' || cell === '✓' || cell === 'yes' || cell === '1') {
+        certifications.push({
+          workerName,
+          equipmentName: equipment[i - 1]!.name
+        });
+      }
+    }
+  }
+
+  const parsed: ParsedEquipmentMatrix = {
+    workCategories: [...workCategories],
+    equipment,
+    workers,
+    certifications
+  };
+
+  // Generate preview token
+  const token = generateToken();
+  previewStore.set(token, {
+    type: 'equipment-matrix',
+    data: parsed,
+    validation: { valid: true, errors: [], warnings: [] },
+    createdAt: Date.now()
+  });
+
+  return Response.json({
+    token,
+    preview: {
+      workCategories: parsed.workCategories.length,
+      equipment: parsed.equipment.length,
+      workers: parsed.workers.length,
+      certifications: parsed.certifications.length,
+      sampleWorkers: parsed.workers.slice(0, 5).map(w => w.name),
+      sampleEquipment: parsed.equipment.slice(0, 5).map(e => e.name)
+    }
+  });
+}
+
+async function handleEquipmentMatrixConfirm(request: Request): Promise<Response> {
+  const body = await request.json() as { token: string };
+  const preview = previewStore.get(body.token);
+
+  if (!preview || preview.type !== 'equipment-matrix') {
+    return Response.json({ error: "Invalid or expired token" }, { status: 400 });
+  }
+
+  previewStore.delete(body.token);
+  const parsed = preview.data as ParsedEquipmentMatrix;
+
+  // Get existing data
+  const [existingEquipment, existingWorkers, existingCategories] = await Promise.all([
+    db.execute("SELECT name FROM equipment"),
+    db.execute("SELECT name FROM workers"),
+    db.execute("SELECT name FROM work_categories")
+  ]);
+
+  const existingEquipmentNames = new Set((existingEquipment.rows as any[]).map(r => r.name));
+  const existingWorkerNames = new Set((existingWorkers.rows as any[]).map(r => r.name));
+  const existingCategoryNames = new Set((existingCategories.rows as any[]).map(r => r.name));
 
   let workCategoriesCreated = 0;
   let equipmentCreated = 0;
   let workersCreated = 0;
   let certificationsCreated = 0;
 
-  // 1. Insert work categories
-  for (const categoryName of parsed.workCategories) {
-    if (!categoryIds.has(categoryName)) {
-      const result = await db.execute({
-        sql: "INSERT INTO work_categories (name) VALUES (?)",
-        args: [categoryName],
-      });
-      categoryIds.set(categoryName, Number(result.lastInsertRowid));
+  // Insert work categories
+  for (const name of parsed.workCategories) {
+    if (!existingCategoryNames.has(name)) {
+      await db.execute({ sql: "INSERT INTO work_categories (name) VALUES (?)", args: [name] });
       workCategoriesCreated++;
     }
   }
 
-  // 2. Insert equipment (with hourly_cost)
+  // Get category IDs
+  const categoryResult = await db.execute("SELECT id, name FROM work_categories");
+  const categoryIds = new Map((categoryResult.rows as any[]).map(r => [r.name, r.id]));
+
+  // Insert equipment
   for (const equip of parsed.equipment) {
-    if (!equipmentIds.has(equip.name)) {
-      const categoryId = categoryIds.get(equip.workCategoryName) || null;
-      const result = await db.execute({
+    if (!existingEquipmentNames.has(equip.name)) {
+      await db.execute({
         sql: "INSERT INTO equipment (name, description, station_count, work_category_id, hourly_cost) VALUES (?, ?, ?, ?, ?)",
-        args: [equip.name, equip.description, equip.stationCount, categoryId, equip.hourlyCost],
+        args: [equip.name, equip.description, equip.stationCount, categoryIds.get(equip.workCategoryName) || null, equip.hourlyCost]
       });
-      equipmentIds.set(equip.name, Number(result.lastInsertRowid));
       equipmentCreated++;
     }
   }
 
-  // 3. Insert workers (with cost_per_hour)
+  // Insert workers
   for (const worker of parsed.workers) {
-    if (!workerIds.has(worker.name)) {
-      const result = await db.execute({
+    if (!existingWorkerNames.has(worker.name)) {
+      await db.execute({
         sql: "INSERT INTO workers (name, status, cost_per_hour) VALUES (?, 'active', ?)",
-        args: [worker.name, worker.costPerHour],
+        args: [worker.name, worker.costPerHour]
       });
-      workerIds.set(worker.name, Number(result.lastInsertRowid));
       workersCreated++;
     }
   }
 
-  // 4. Insert certifications
+  // Get IDs for certifications
+  const equipResult = await db.execute("SELECT id, name FROM equipment");
+  const workerResult = await db.execute("SELECT id, name FROM workers");
+  const equipIds = new Map((equipResult.rows as any[]).map(r => [r.name, r.id]));
+  const workerIds = new Map((workerResult.rows as any[]).map(r => [r.name, r.id]));
+
+  // Insert certifications
   for (const cert of parsed.certifications) {
     const workerId = workerIds.get(cert.workerName);
-    const equipmentId = equipmentIds.get(cert.equipmentName);
-
+    const equipmentId = equipIds.get(cert.equipmentName);
     if (workerId && equipmentId) {
-      // Check if certification already exists
-      const existingCert = await db.execute({
+      const existing = await db.execute({
         sql: "SELECT id FROM equipment_certifications WHERE worker_id = ? AND equipment_id = ?",
-        args: [workerId, equipmentId],
+        args: [workerId, equipmentId]
       });
-
-      if (existingCert.rows.length === 0) {
+      if (existing.rows.length === 0) {
         await db.execute({
           sql: "INSERT INTO equipment_certifications (worker_id, equipment_id) VALUES (?, ?)",
-          args: [workerId, equipmentId],
+          args: [workerId, equipmentId]
         });
         certificationsCreated++;
       }
     }
   }
 
-  return { workCategoriesCreated, equipmentCreated, workersCreated, certificationsCreated };
+  return Response.json({
+    success: true,
+    created: { workCategoriesCreated, equipmentCreated, workersCreated, certificationsCreated }
+  });
 }
 
-/**
- * Execute Product Steps import
- */
-async function executeProductStepsImport(
-  parsed: ParsedProductSteps,
-  productId: number
-): Promise<{ workCategoriesCreated: number; componentsCreated: number; stepsCreated: number; dependenciesCreated: number }> {
-  // Get fresh existing data
-  const existing = await getExistingData();
+// ============================================================
+// BOM Steps Import
+// ============================================================
 
-  // Track created IDs
-  const categoryIds = new Map<string, number>(existing.workCategories);
-  const componentIds = new Map<string, number>(existing.components);
-  const stepIds = new Map<string, number>();
+interface ParsedBOMStep {
+  fishbowl_bom_id: number;
+  fishbowl_bom_num: string;
+  name: string;
+  step_code: string | null;
+  details: string | null;
+  time_per_piece_seconds: number;
+  sequence: number;
+  work_category: string | null;
+  equipment: string | null;
+  component: string | null;
+}
 
-  let workCategoriesCreated = 0;
-  let componentsCreated = 0;
-  let stepsCreated = 0;
-  let dependenciesCreated = 0;
+async function handleBOMStepsPreview(request: Request): Promise<Response> {
+  let content: string;
 
-  // 1. Insert work categories
-  for (const categoryName of parsed.workCategories) {
-    if (!categoryIds.has(categoryName)) {
-      const result = await db.execute({
-        sql: "INSERT INTO work_categories (name) VALUES (?)",
-        args: [categoryName],
-      });
-      categoryIds.set(categoryName, Number(result.lastInsertRowid));
-      workCategoriesCreated++;
+  const contentType = request.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    const body = await request.json() as { content?: string };
+    if (!body.content) {
+      return Response.json({ error: "No content provided" }, { status: 400 });
     }
+    content = body.content;
+  } else if (contentType.includes("multipart/form-data")) {
+    const formData = await request.formData();
+    const file = formData.get("file") as File;
+    if (!file) {
+      return Response.json({ error: "No file provided" }, { status: 400 });
+    }
+    content = await file.text();
+  } else {
+    return Response.json({ error: "Invalid content type" }, { status: 400 });
   }
 
-  // 2. Insert components
-  for (const componentName of parsed.components) {
-    if (!componentIds.has(componentName)) {
-      const result = await db.execute({
-        sql: "INSERT INTO components (name) VALUES (?)",
-        args: [componentName],
-      });
-      componentIds.set(componentName, Number(result.lastInsertRowid));
-      componentsCreated++;
-    }
+  const rows = parseSpreadsheet(content);
+
+  if (rows.length < 2) {
+    return Response.json({ error: "File must have at least a header row and one data row" }, { status: 400 });
   }
 
-  // 3. Insert product steps
-  let sequence = 1;
-  for (const step of parsed.steps) {
-    const categoryId = categoryIds.get(step.category) || null;
-    const componentId = step.componentName ? componentIds.get(step.componentName) || null : null;
-    const equipmentId = step.equipmentCode ? existing.equipment.get(step.equipmentCode) || null : null;
+  const headerRow = rows[0]!.map(h => h.toLowerCase().replace(/\s+/g, '_'));
+  const dataRows = rows.slice(1);
 
-    // Determine required_skill_category based on category
-    const skillCategory = step.category === 'SEWING' ? 'SEWING' : 'OTHER';
+  // Required columns: fishbowl_bom_id, fishbowl_bom_num, name, time_per_piece_seconds, sequence
+  const requiredCols = ['fishbowl_bom_id', 'fishbowl_bom_num', 'name', 'time_per_piece_seconds', 'sequence'];
+  const missingCols = requiredCols.filter(col => !headerRow.includes(col));
 
-    const result = await db.execute({
-      sql: `INSERT INTO product_steps
-            (product_id, name, category, work_category_id, time_per_piece_seconds, sequence,
-             required_skill_category, equipment_id, component_id, step_code)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        productId,
-        step.taskName,
-        step.category, // Keep category for backwards compatibility
-        categoryId,
-        step.timePerPieceSeconds,
-        sequence++,
-        skillCategory,
-        equipmentId,
-        componentId,
-        step.stepCode,
-      ],
+  if (missingCols.length > 0) {
+    return Response.json({
+      error: `Missing required columns: ${missingCols.join(', ')}. Required: fishbowl_bom_id, fishbowl_bom_num, name, time_per_piece_seconds, sequence`
+    }, { status: 400 });
+  }
+
+  const getCol = (row: string[], col: string) => {
+    const idx = headerRow.indexOf(col);
+    return idx >= 0 ? row[idx]?.trim() || null : null;
+  };
+
+  const steps: ParsedBOMStep[] = [];
+  const errors: string[] = [];
+
+  for (let i = 0; i < dataRows.length; i++) {
+    const row = dataRows[i]!;
+    const rowNum = i + 2; // 1-indexed + header
+
+    const bomId = parseInt(getCol(row, 'fishbowl_bom_id') || '');
+    const bomNum = getCol(row, 'fishbowl_bom_num');
+    const name = getCol(row, 'name');
+    const time = parseInt(getCol(row, 'time_per_piece_seconds') || '');
+    const seq = parseInt(getCol(row, 'sequence') || '');
+
+    if (isNaN(bomId)) {
+      errors.push(`Row ${rowNum}: Invalid fishbowl_bom_id`);
+      continue;
+    }
+    if (!bomNum) {
+      errors.push(`Row ${rowNum}: Missing fishbowl_bom_num`);
+      continue;
+    }
+    if (!name) {
+      errors.push(`Row ${rowNum}: Missing name`);
+      continue;
+    }
+    if (isNaN(time)) {
+      errors.push(`Row ${rowNum}: Invalid time_per_piece_seconds`);
+      continue;
+    }
+    if (isNaN(seq)) {
+      errors.push(`Row ${rowNum}: Invalid sequence`);
+      continue;
+    }
+
+    steps.push({
+      fishbowl_bom_id: bomId,
+      fishbowl_bom_num: bomNum,
+      name,
+      step_code: getCol(row, 'step_code'),
+      details: getCol(row, 'details'),
+      time_per_piece_seconds: time,
+      sequence: seq,
+      work_category: getCol(row, 'work_category'),
+      equipment: getCol(row, 'equipment'),
+      component: getCol(row, 'component')
     });
-    stepIds.set(step.stepCode, Number(result.lastInsertRowid));
+  }
+
+  const token = generateToken();
+  previewStore.set(token, {
+    type: 'bom-steps',
+    data: steps,
+    validation: { valid: errors.length === 0, errors },
+    createdAt: Date.now()
+  });
+
+  // Group by BOM for preview
+  const bomCounts = new Map<string, number>();
+  for (const step of steps) {
+    bomCounts.set(step.fishbowl_bom_num, (bomCounts.get(step.fishbowl_bom_num) || 0) + 1);
+  }
+
+  return Response.json({
+    token,
+    preview: {
+      totalSteps: steps.length,
+      totalBOMs: bomCounts.size,
+      bomBreakdown: [...bomCounts.entries()].slice(0, 10).map(([bom, count]) => ({ bom, steps: count })),
+      errors: errors.slice(0, 10),
+      hasErrors: errors.length > 0
+    }
+  });
+}
+
+async function handleBOMStepsConfirm(request: Request): Promise<Response> {
+  const body = await request.json() as { token: string };
+  const preview = previewStore.get(body.token);
+
+  if (!preview || preview.type !== 'bom-steps') {
+    return Response.json({ error: "Invalid or expired token" }, { status: 400 });
+  }
+
+  previewStore.delete(body.token);
+  const steps = preview.data as ParsedBOMStep[];
+
+  // Get existing lookup data
+  const [workCatResult, equipResult, compResult] = await Promise.all([
+    db.execute("SELECT id, name FROM work_categories"),
+    db.execute("SELECT id, name FROM equipment"),
+    db.execute("SELECT id, name FROM components")
+  ]);
+
+  const workCatIds = new Map((workCatResult.rows as any[]).map(r => [r.name.toLowerCase(), r.id]));
+  const equipIds = new Map((equipResult.rows as any[]).map(r => [r.name.toLowerCase(), r.id]));
+  const compIds = new Map((compResult.rows as any[]).map(r => [r.name.toLowerCase(), r.id]));
+
+  let stepsCreated = 0;
+
+  for (const step of steps) {
+    await db.execute({
+      sql: `INSERT INTO bom_steps (
+        fishbowl_bom_id, fishbowl_bom_num, name, step_code, details,
+        time_per_piece_seconds, sequence, work_category_id, equipment_id, component_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        step.fishbowl_bom_id,
+        step.fishbowl_bom_num,
+        step.name,
+        step.step_code,
+        step.details,
+        step.time_per_piece_seconds,
+        step.sequence,
+        step.work_category ? workCatIds.get(step.work_category.toLowerCase()) || null : null,
+        step.equipment ? equipIds.get(step.equipment.toLowerCase()) || null : null,
+        step.component ? compIds.get(step.component.toLowerCase()) || null : null
+      ]
+    });
     stepsCreated++;
   }
 
-  // 4. Insert step dependencies
-  for (const step of parsed.steps) {
-    const stepId = stepIds.get(step.stepCode);
-    if (!stepId) continue;
-
-    for (const dep of step.dependencies) {
-      const depStepId = stepIds.get(dep.stepCode);
-      if (depStepId) {
-        await db.execute({
-          sql: "INSERT INTO step_dependencies (step_id, depends_on_step_id, dependency_type) VALUES (?, ?, ?)",
-          args: [stepId, depStepId, dep.type],
-        });
-        dependenciesCreated++;
-      }
-    }
-  }
-
-  return { workCategoriesCreated, componentsCreated, stepsCreated, dependenciesCreated };
+  return Response.json({ success: true, created: { stepsCreated } });
 }
 
-/**
- * Get existing data for production data validation
- */
-async function getProductionDataExistingData(): Promise<ProductionDataExistingData> {
-  const existing = await getExistingData();
+// ============================================================
+// Demand Import
+// ============================================================
 
-  // Get orders with product info
-  const ordersResult = await db.execute(`
-    SELECT o.id, o.product_id, p.name as product_name
-    FROM orders o
-    JOIN products p ON o.product_id = p.id
-  `);
+interface ParsedDemand {
+  source: string;
+  fishbowl_bom_id: number;
+  fishbowl_bom_num: string;
+  quantity: number;
+  due_date: string;
+  target_completion_date: string | null;
+  priority: number | null;
+  customer_name: string | null;
+  notes: string | null;
+  fishbowl_so_id: number | null;
+  fishbowl_so_num: string | null;
+}
 
-  const orders = new Map<number, { id: number; productId: number; productName: string }>();
-  for (const row of ordersResult.rows) {
-    orders.set(row.id as number, {
-      id: row.id as number,
-      productId: row.product_id as number,
-      productName: row.product_name as string,
-    });
-  }
+async function handleDemandPreview(request: Request): Promise<Response> {
+  let content: string;
 
-  // Get product steps indexed by product_id and step_code
-  const stepsResult = await db.execute(`
-    SELECT id, product_id, step_code, name
-    FROM product_steps
-    WHERE step_code IS NOT NULL
-  `);
-
-  const productSteps = new Map<number, Map<string, { id: number; name: string }>>();
-  for (const row of stepsResult.rows) {
-    const productId = row.product_id as number;
-    const stepCode = row.step_code as string;
-
-    if (!productSteps.has(productId)) {
-      productSteps.set(productId, new Map());
+  const contentType = request.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    const body = await request.json() as { content?: string };
+    if (!body.content) {
+      return Response.json({ error: "No content provided" }, { status: 400 });
     }
-    productSteps.get(productId)!.set(stepCode, {
-      id: row.id as number,
-      name: row.name as string,
-    });
+    content = body.content;
+  } else if (contentType.includes("multipart/form-data")) {
+    const formData = await request.formData();
+    const file = formData.get("file") as File;
+    if (!file) {
+      return Response.json({ error: "No file provided" }, { status: 400 });
+    }
+    content = await file.text();
+  } else {
+    return Response.json({ error: "Invalid content type" }, { status: 400 });
   }
 
-  // Get existing assignments for duplicate detection
-  const assignmentsResult = await db.execute(`
-    SELECT twa.worker_id, se.product_step_id, se.date
-    FROM task_worker_assignments twa
-    JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-  `);
+  const rows = parseSpreadsheet(content);
 
-  const existingAssignments = new Set<string>();
-  for (const row of assignmentsResult.rows) {
-    const key = `${row.worker_id}:${row.product_step_id}:${row.date}`;
-    existingAssignments.add(key);
+  if (rows.length < 2) {
+    return Response.json({ error: "File must have at least a header row and one data row" }, { status: 400 });
   }
 
-  return {
-    ...existing,
-    orders,
-    productSteps,
-    existingAssignments,
+  const headerRow = rows[0]!.map(h => h.toLowerCase().replace(/\s+/g, '_'));
+  const dataRows = rows.slice(1);
+
+  // Required columns
+  const requiredCols = ['fishbowl_bom_id', 'fishbowl_bom_num', 'quantity', 'due_date'];
+  const missingCols = requiredCols.filter(col => !headerRow.includes(col));
+
+  if (missingCols.length > 0) {
+    return Response.json({
+      error: `Missing required columns: ${missingCols.join(', ')}`
+    }, { status: 400 });
+  }
+
+  const getCol = (row: string[], col: string) => {
+    const idx = headerRow.indexOf(col);
+    return idx >= 0 ? row[idx]?.trim() || null : null;
   };
+
+  const demands: ParsedDemand[] = [];
+  const errors: string[] = [];
+
+  for (let i = 0; i < dataRows.length; i++) {
+    const row = dataRows[i]!;
+    const rowNum = i + 2;
+
+    const bomId = parseInt(getCol(row, 'fishbowl_bom_id') || '');
+    const bomNum = getCol(row, 'fishbowl_bom_num');
+    const quantity = parseInt(getCol(row, 'quantity') || '');
+    const dueDate = getCol(row, 'due_date');
+
+    if (isNaN(bomId)) {
+      errors.push(`Row ${rowNum}: Invalid fishbowl_bom_id`);
+      continue;
+    }
+    if (!bomNum) {
+      errors.push(`Row ${rowNum}: Missing fishbowl_bom_num`);
+      continue;
+    }
+    if (isNaN(quantity) || quantity <= 0) {
+      errors.push(`Row ${rowNum}: Invalid quantity`);
+      continue;
+    }
+    if (!dueDate) {
+      errors.push(`Row ${rowNum}: Missing due_date`);
+      continue;
+    }
+
+    demands.push({
+      source: getCol(row, 'source') || 'manual',
+      fishbowl_bom_id: bomId,
+      fishbowl_bom_num: bomNum,
+      quantity,
+      due_date: dueDate,
+      target_completion_date: getCol(row, 'target_completion_date'),
+      priority: getCol(row, 'priority') ? parseInt(getCol(row, 'priority')!) : null,
+      customer_name: getCol(row, 'customer_name'),
+      notes: getCol(row, 'notes'),
+      fishbowl_so_id: getCol(row, 'fishbowl_so_id') ? parseInt(getCol(row, 'fishbowl_so_id')!) : null,
+      fishbowl_so_num: getCol(row, 'fishbowl_so_num')
+    });
+  }
+
+  const token = generateToken();
+  previewStore.set(token, {
+    type: 'demand',
+    data: demands,
+    validation: { valid: errors.length === 0, errors },
+    createdAt: Date.now()
+  });
+
+  return Response.json({
+    token,
+    preview: {
+      totalDemands: demands.length,
+      totalQuantity: demands.reduce((sum, d) => sum + d.quantity, 0),
+      customers: [...new Set(demands.map(d => d.customer_name).filter(Boolean))].slice(0, 5),
+      errors: errors.slice(0, 10),
+      hasErrors: errors.length > 0
+    }
+  });
 }
 
-/**
- * Execute Production Data import
- */
-async function executeProductionDataImport(
-  validation: ProductionDataValidationResult
-): Promise<{ schedulesCreated: number; entriesCreated: number; assignmentsCreated: number }> {
-  let schedulesCreated = 0;
-  let entriesCreated = 0;
-  let assignmentsCreated = 0;
+async function handleDemandConfirm(request: Request): Promise<Response> {
+  const body = await request.json() as { token: string };
+  const preview = previewStore.get(body.token);
 
-  // Track created schedules and entries to avoid duplicates
-  const scheduleCache = new Map<string, number>(); // "orderId:weekStart" -> schedule_id
-  const entryCache = new Map<string, number>(); // "scheduleId:stepId:date" -> entry_id
-
-  // First, fetch existing schedules
-  const existingSchedulesResult = await db.execute(`
-    SELECT id, order_id, week_start_date FROM schedules
-  `);
-  for (const row of existingSchedulesResult.rows) {
-    const key = `${row.order_id}:${row.week_start_date}`;
-    scheduleCache.set(key, row.id as number);
+  if (!preview || preview.type !== 'demand') {
+    return Response.json({ error: "Invalid or expired token" }, { status: 400 });
   }
 
-  // Fetch existing schedule entries
-  const existingEntriesResult = await db.execute(`
-    SELECT id, schedule_id, product_step_id, date FROM schedule_entries
-  `);
-  for (const row of existingEntriesResult.rows) {
-    const key = `${row.schedule_id}:${row.product_step_id}:${row.date}`;
-    entryCache.set(key, row.id as number);
+  previewStore.delete(body.token);
+  const demands = preview.data as ParsedDemand[];
+
+  let demandsCreated = 0;
+
+  for (const demand of demands) {
+    await db.execute({
+      sql: `INSERT INTO demand_entries (
+        source, fishbowl_bom_id, fishbowl_bom_num, quantity, due_date,
+        target_completion_date, priority, customer_name, notes,
+        fishbowl_so_id, fishbowl_so_num, status, quantity_completed
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)`,
+      args: [
+        demand.source,
+        demand.fishbowl_bom_id,
+        demand.fishbowl_bom_num,
+        demand.quantity,
+        demand.due_date,
+        demand.target_completion_date || demand.due_date,
+        demand.priority || 50,
+        demand.customer_name,
+        demand.notes,
+        demand.fishbowl_so_id,
+        demand.fishbowl_so_num
+      ]
+    });
+    demandsCreated++;
   }
 
-  for (const row of validation.preview.rows) {
-    // Calculate week start date
-    const date = new Date(row.date);
-    const dayOfWeek = date.getDay();
-    const weekStart = new Date(date);
-    weekStart.setDate(date.getDate() - dayOfWeek);
-    const weekStartStr = weekStart.toISOString().split('T')[0]!;
+  return Response.json({ success: true, created: { demandsCreated } });
+}
 
-    // Get or create schedule
-    const scheduleKey = `${row.orderId}:${weekStartStr}`;
-    let scheduleId = scheduleCache.get(scheduleKey);
+// ============================================================
+// Production History Import
+// ============================================================
 
-    if (!scheduleId) {
-      const scheduleResult = await db.execute({
-        sql: "INSERT INTO schedules (order_id, week_start_date) VALUES (?, ?)",
-        args: [row.orderId!, weekStartStr],
-      });
-      scheduleId = Number(scheduleResult.lastInsertRowid);
-      scheduleCache.set(scheduleKey, scheduleId);
-      schedulesCreated++;
+interface ParsedProductionHistory {
+  fishbowl_bom_id: number | null;
+  fishbowl_bom_num: string;
+  bom_step_id: number | null;
+  step_name: string;
+  worker_id: number | null;
+  worker_name: string;
+  date: string;
+  start_time: string;
+  end_time: string;
+  units_produced: number;
+  demand_entry_id: number | null;
+}
+
+async function handleProductionHistoryPreview(request: Request): Promise<Response> {
+  let content: string;
+
+  const contentType = request.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    const body = await request.json() as { content?: string };
+    if (!body.content) {
+      return Response.json({ error: "No content provided" }, { status: 400 });
+    }
+    content = body.content;
+  } else if (contentType.includes("multipart/form-data")) {
+    const formData = await request.formData();
+    const file = formData.get("file") as File;
+    if (!file) {
+      return Response.json({ error: "No file provided" }, { status: 400 });
+    }
+    content = await file.text();
+  } else {
+    return Response.json({ error: "Invalid content type" }, { status: 400 });
+  }
+
+  const rows = parseSpreadsheet(content);
+
+  if (rows.length < 2) {
+    return Response.json({ error: "File must have at least a header row and one data row" }, { status: 400 });
+  }
+
+  const headerRow = rows[0]!.map(h => h.toLowerCase().replace(/\s+/g, '_'));
+  const dataRows = rows.slice(1);
+
+  // Required columns
+  const requiredCols = ['fishbowl_bom_num', 'step_name', 'worker_name', 'date', 'start_time', 'end_time', 'units_produced'];
+  const missingCols = requiredCols.filter(col => !headerRow.includes(col));
+
+  if (missingCols.length > 0) {
+    return Response.json({
+      error: `Missing required columns: ${missingCols.join(', ')}`
+    }, { status: 400 });
+  }
+
+  const getCol = (row: string[], col: string) => {
+    const idx = headerRow.indexOf(col);
+    return idx >= 0 ? row[idx]?.trim() || null : null;
+  };
+
+  const records: ParsedProductionHistory[] = [];
+  const errors: string[] = [];
+
+  for (let i = 0; i < dataRows.length; i++) {
+    const row = dataRows[i]!;
+    const rowNum = i + 2;
+
+    const bomNum = getCol(row, 'fishbowl_bom_num');
+    const stepName = getCol(row, 'step_name');
+    const workerName = getCol(row, 'worker_name');
+    const date = getCol(row, 'date');
+    const startTime = getCol(row, 'start_time');
+    const endTime = getCol(row, 'end_time');
+    const units = parseInt(getCol(row, 'units_produced') || '');
+
+    if (!bomNum) {
+      errors.push(`Row ${rowNum}: Missing fishbowl_bom_num`);
+      continue;
+    }
+    if (!stepName) {
+      errors.push(`Row ${rowNum}: Missing step_name`);
+      continue;
+    }
+    if (!workerName) {
+      errors.push(`Row ${rowNum}: Missing worker_name`);
+      continue;
+    }
+    if (!date) {
+      errors.push(`Row ${rowNum}: Missing date`);
+      continue;
+    }
+    if (!startTime || !endTime) {
+      errors.push(`Row ${rowNum}: Missing start_time or end_time`);
+      continue;
+    }
+    if (isNaN(units) || units < 0) {
+      errors.push(`Row ${rowNum}: Invalid units_produced`);
+      continue;
     }
 
-    // Get or create schedule entry
-    const entryKey = `${scheduleId}:${row.productStepId}:${row.date}`;
-    let entryId = entryCache.get(entryKey);
+    records.push({
+      fishbowl_bom_id: getCol(row, 'fishbowl_bom_id') ? parseInt(getCol(row, 'fishbowl_bom_id')!) : null,
+      fishbowl_bom_num: bomNum,
+      bom_step_id: getCol(row, 'bom_step_id') ? parseInt(getCol(row, 'bom_step_id')!) : null,
+      step_name: stepName,
+      worker_id: getCol(row, 'worker_id') ? parseInt(getCol(row, 'worker_id')!) : null,
+      worker_name: workerName,
+      date,
+      start_time: startTime,
+      end_time: endTime,
+      units_produced: units,
+      demand_entry_id: getCol(row, 'demand_entry_id') ? parseInt(getCol(row, 'demand_entry_id')!) : null
+    });
+  }
 
-    if (!entryId) {
-      const entryResult = await db.execute({
-        sql: "INSERT INTO schedule_entries (schedule_id, product_step_id, date, status) VALUES (?, ?, ?, 'completed')",
-        args: [scheduleId, row.productStepId, row.date],
-      });
-      entryId = Number(entryResult.lastInsertRowid);
-      entryCache.set(entryKey, entryId);
-      entriesCreated++;
+  const token = generateToken();
+  previewStore.set(token, {
+    type: 'production-history',
+    data: records,
+    validation: { valid: errors.length === 0, errors },
+    createdAt: Date.now()
+  });
+
+  return Response.json({
+    token,
+    preview: {
+      totalRecords: records.length,
+      totalUnits: records.reduce((sum, r) => sum + r.units_produced, 0),
+      uniqueWorkers: [...new Set(records.map(r => r.worker_name))].length,
+      uniqueBOMs: [...new Set(records.map(r => r.fishbowl_bom_num))].length,
+      dateRange: records.length > 0 ? {
+        earliest: records.reduce((min, r) => r.date < min ? r.date : min, records[0]!.date),
+        latest: records.reduce((max, r) => r.date > max ? r.date : max, records[0]!.date)
+      } : null,
+      errors: errors.slice(0, 10),
+      hasErrors: errors.length > 0
     }
+  });
+}
 
-    // Create task worker assignment
-    // Convert date + time to ISO datetime string
-    const startDateTime = `${row.date}T${row.startTime}`;
-    const endDateTime = `${row.date}T${row.endTime}`;
+async function handleProductionHistoryConfirm(request: Request): Promise<Response> {
+  const body = await request.json() as { token: string };
+  const preview = previewStore.get(body.token);
+
+  if (!preview || preview.type !== 'production-history') {
+    return Response.json({ error: "Invalid or expired token" }, { status: 400 });
+  }
+
+  previewStore.delete(body.token);
+  const records = preview.data as ParsedProductionHistory[];
+
+  // Get lookups for IDs
+  const [workersResult, stepsResult] = await Promise.all([
+    db.execute("SELECT id, name FROM workers"),
+    db.execute("SELECT id, name, fishbowl_bom_id, time_per_piece_seconds FROM bom_steps")
+  ]);
+
+  const workerIds = new Map((workersResult.rows as any[]).map(r => [r.name.toLowerCase(), r.id]));
+  const stepsByName = new Map((stepsResult.rows as any[]).map(r => [
+    `${r.name.toLowerCase()}`,
+    { id: r.id, bomId: r.fishbowl_bom_id, timePerPiece: r.time_per_piece_seconds }
+  ]));
+
+  let recordsCreated = 0;
+
+  for (const record of records) {
+    // Calculate actual seconds from start/end time
+    const startParts = record.start_time.split(':').map(Number);
+    const endParts = record.end_time.split(':').map(Number);
+    const startMinutes = (startParts[0] || 0) * 60 + (startParts[1] || 0);
+    const endMinutes = (endParts[0] || 0) * 60 + (endParts[1] || 0);
+    const actualSeconds = (endMinutes - startMinutes) * 60;
+
+    // Try to find step info
+    const stepInfo = stepsByName.get(record.step_name.toLowerCase());
+    const expectedSeconds = stepInfo ? stepInfo.timePerPiece * record.units_produced : 0;
+    const efficiencyPercent = actualSeconds > 0 ? (expectedSeconds / actualSeconds) * 100 : 0;
+
+    // Try to find worker ID
+    const workerId = record.worker_id || workerIds.get(record.worker_name.toLowerCase()) || null;
 
     await db.execute({
-      sql: `INSERT INTO task_worker_assignments
-            (schedule_entry_id, worker_id, actual_start_time, actual_end_time, actual_output, status)
-            VALUES (?, ?, ?, ?, ?, 'completed')`,
-      args: [entryId, row.workerId, startDateTime, endDateTime, row.units],
+      sql: `INSERT INTO production_history (
+        demand_entry_id, fishbowl_bom_id, fishbowl_bom_num,
+        bom_step_id, step_name, worker_id, worker_name,
+        date, start_time, end_time, units_produced, planned_units,
+        actual_seconds, expected_seconds, efficiency_percent,
+        recorded_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      args: [
+        record.demand_entry_id,
+        record.fishbowl_bom_id || (stepInfo?.bomId || null),
+        record.fishbowl_bom_num,
+        record.bom_step_id || (stepInfo?.id || null),
+        record.step_name,
+        workerId,
+        record.worker_name,
+        record.date,
+        record.start_time,
+        record.end_time,
+        record.units_produced,
+        record.units_produced, // planned = actual for imports
+        actualSeconds,
+        expectedSeconds,
+        efficiencyPercent
+      ]
     });
-    assignmentsCreated++;
+    recordsCreated++;
   }
 
-  return { schedulesCreated, entriesCreated, assignmentsCreated };
+  return Response.json({ success: true, created: { recordsCreated } });
 }
-
-// ============================================================================
-// NEW V2 IMPORT FUNCTIONS
-// ============================================================================
-
-/**
- * Get existing data for Orders validation
- * Note: Orders no longer include version - version is determined at scheduling time
- */
-async function getOrdersExistingData(): Promise<OrdersExistingData> {
-  const existing = await getExistingData();
-
-  // Get products by name
-  const productsResult = await db.execute("SELECT id, name FROM products");
-  const products = new Map<string, { id: number; name: string }>();
-  for (const row of productsResult.rows) {
-    products.set(row.name as string, { id: row.id as number, name: row.name as string });
-  }
-
-  return {
-    ...existing,
-    products,
-  };
-}
-
-/**
- * Get existing data for Production History V2 validation
- * Note: Version is now provided in the CSV, not looked up from order
- */
-async function getProductionDataV2ExistingData(): Promise<ProductionDataV2ExistingData> {
-  const existing = await getExistingData();
-
-  // Get orders by product_name:due_date key (no longer includes build_version_id)
-  const ordersResult = await db.execute(`
-    SELECT o.id, o.product_id, p.name as product_name, o.due_date
-    FROM orders o
-    JOIN products p ON o.product_id = p.id
-  `);
-  const ordersByKey = new Map<string, { id: number; productId: number; productName: string }>();
-  for (const row of ordersResult.rows) {
-    const key = `${row.product_name}:${row.due_date}`;
-    ordersByKey.set(key, {
-      id: row.id as number,
-      productId: row.product_id as number,
-      productName: row.product_name as string,
-    });
-  }
-
-  // Get product versions by product_id -> version_name
-  const versionsResult = await db.execute(`
-    SELECT id, product_id, version_name FROM product_build_versions
-  `);
-  const productVersions = new Map<number, Map<string, { id: number; versionName: string }>>();
-  for (const row of versionsResult.rows) {
-    const productId = row.product_id as number;
-    if (!productVersions.has(productId)) {
-      productVersions.set(productId, new Map());
-    }
-    productVersions.get(productId)!.set(row.version_name as string, {
-      id: row.id as number,
-      versionName: row.version_name as string,
-    });
-  }
-
-  // Get steps by build_version_id -> step_code
-  const stepsResult = await db.execute(`
-    SELECT bvs.build_version_id, ps.id, ps.step_code, ps.name, ps.time_per_piece_seconds
-    FROM build_version_steps bvs
-    JOIN product_steps ps ON bvs.product_step_id = ps.id
-    WHERE ps.step_code IS NOT NULL
-  `);
-  const versionSteps = new Map<number, Map<string, { id: number; name: string; timePerPieceSeconds: number }>>();
-  for (const row of stepsResult.rows) {
-    const versionId = row.build_version_id as number;
-    if (!versionSteps.has(versionId)) {
-      versionSteps.set(versionId, new Map());
-    }
-    versionSteps.get(versionId)!.set(row.step_code as string, {
-      id: row.id as number,
-      name: row.name as string,
-      timePerPieceSeconds: row.time_per_piece_seconds as number,
-    });
-  }
-
-  // Get existing assignments for duplicate detection
-  const assignmentsResult = await db.execute(`
-    SELECT twa.worker_id, se.product_step_id, se.date, twa.actual_start_time
-    FROM task_worker_assignments twa
-    JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-  `);
-  const existingAssignments = new Set<string>();
-  for (const row of assignmentsResult.rows) {
-    // Extract time from datetime if present
-    const startTime = row.actual_start_time ? (row.actual_start_time as string).split('T')[1] || '' : '';
-    const key = `${row.worker_id}:${row.product_step_id}:${row.date}:${startTime}`;
-    existingAssignments.add(key);
-  }
-
-  return {
-    ...existing,
-    ordersByKey,
-    productVersions,
-    versionSteps,
-    existingAssignments,
-  };
-}
-
-/**
- * Execute Products CSV import
- */
-async function executeProductsImport(
-  parsed: ParsedProducts,
-  validation: ProductsValidationResult
-): Promise<{
-  workCategoriesCreated: number;
-  componentsCreated: number;
-  productsCreated: number;
-  versionsCreated: number;
-  stepsCreated: number;
-  dependenciesCreated: number;
-}> {
-  const existing = await getExistingData();
-
-  const categoryIds = new Map<string, number>(existing.workCategories);
-  const componentIds = new Map<string, number>(existing.components);
-
-  let workCategoriesCreated = 0;
-  let componentsCreated = 0;
-  let productsCreated = 0;
-  let versionsCreated = 0;
-  let stepsCreated = 0;
-  let dependenciesCreated = 0;
-
-  // 1. Insert work categories
-  for (const categoryName of parsed.workCategories) {
-    if (!categoryIds.has(categoryName)) {
-      const result = await db.execute({
-        sql: "INSERT INTO work_categories (name) VALUES (?)",
-        args: [categoryName],
-      });
-      categoryIds.set(categoryName, Number(result.lastInsertRowid));
-      workCategoriesCreated++;
-    }
-  }
-
-  // 2. Insert components
-  for (const componentName of parsed.components) {
-    if (!componentIds.has(componentName)) {
-      const result = await db.execute({
-        sql: "INSERT INTO components (name) VALUES (?)",
-        args: [componentName],
-      });
-      componentIds.set(componentName, Number(result.lastInsertRowid));
-      componentsCreated++;
-    }
-  }
-
-  // 3. For each product
-  for (const [productName, versions] of parsed.products) {
-    // Create product
-    const productResult = await db.execute({
-      sql: "INSERT INTO products (name) VALUES (?)",
-      args: [productName],
-    });
-    const productId = Number(productResult.lastInsertRowid);
-    productsCreated++;
-
-    // For each version
-    for (const [versionNumber, version] of versions) {
-      // Create build version
-      const versionResult = await db.execute({
-        sql: `INSERT INTO product_build_versions (product_id, version_name, version_number, is_default, status)
-              VALUES (?, ?, ?, ?, 'active')`,
-        args: [productId, version.versionName, versionNumber, version.isDefault ? 1 : 0],
-      });
-      const buildVersionId = Number(versionResult.lastInsertRowid);
-      versionsCreated++;
-
-      // Create steps
-      const stepIds = new Map<string, number>();
-      let sequence = 1;
-
-      for (const step of version.steps) {
-        const categoryId = categoryIds.get(step.category) || null;
-        const componentId = step.componentName ? componentIds.get(step.componentName) || null : null;
-        const equipmentId = step.equipmentCode ? existing.equipment.get(step.equipmentCode) || null : null;
-        const skillCategory = step.category === 'SEWING' ? 'SEWING' : 'OTHER';
-
-        const stepResult = await db.execute({
-          sql: `INSERT INTO product_steps
-                (product_id, name, category, work_category_id, time_per_piece_seconds, sequence,
-                 required_skill_category, equipment_id, component_id, step_code)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          args: [
-            productId,
-            step.taskName,
-            step.category,
-            categoryId,
-            step.timePerPieceSeconds,
-            sequence++,
-            skillCategory,
-            equipmentId,
-            componentId,
-            step.stepCode,
-          ],
-        });
-        const stepId = Number(stepResult.lastInsertRowid);
-        stepIds.set(step.stepCode, stepId);
-        stepsCreated++;
-
-        // Link step to build version
-        await db.execute({
-          sql: "INSERT INTO build_version_steps (build_version_id, product_step_id, sequence) VALUES (?, ?, ?)",
-          args: [buildVersionId, stepId, sequence - 1],
-        });
-      }
-
-      // Create dependencies
-      for (const step of version.steps) {
-        const stepId = stepIds.get(step.stepCode);
-        if (!stepId) continue;
-
-        for (const dep of step.dependencies) {
-          const depStepId = stepIds.get(dep.stepCode);
-          if (depStepId) {
-            await db.execute({
-              sql: "INSERT INTO step_dependencies (step_id, depends_on_step_id, dependency_type) VALUES (?, ?, ?)",
-              args: [stepId, depStepId, dep.type],
-            });
-            dependenciesCreated++;
-          }
-        }
-      }
-    }
-  }
-
-  return {
-    workCategoriesCreated,
-    componentsCreated,
-    productsCreated,
-    versionsCreated,
-    stepsCreated,
-    dependenciesCreated,
-  };
-}
-
-/**
- * Execute Orders CSV import
- * Note: Orders no longer include version - version is determined at scheduling time
- */
-async function executeOrdersImport(
-  validation: OrdersValidationResult
-): Promise<{ ordersCreated: number }> {
-  let ordersCreated = 0;
-
-  for (const order of validation.preview.orders) {
-    await db.execute({
-      sql: "INSERT INTO orders (product_id, quantity, due_date, status) VALUES (?, ?, ?, ?)",
-      args: [order.productId, order.quantity, order.dueDate, order.status],
-    });
-    ordersCreated++;
-  }
-
-  return { ordersCreated };
-}
-
-/**
- * Execute Production History V2 import
- * Note: Now stores build_version_id on schedules from the CSV's version_name
- */
-async function executeProductionDataV2Import(
-  validation: ProductionDataV2ValidationResult
-): Promise<{ schedulesCreated: number; entriesCreated: number; assignmentsCreated: number }> {
-  let schedulesCreated = 0;
-  let entriesCreated = 0;
-  let assignmentsCreated = 0;
-
-  // Track created schedules and entries to avoid duplicates
-  // Key now includes build_version_id since same order could be built with different versions
-  const scheduleCache = new Map<string, number>(); // "orderId:weekStart:buildVersionId" -> schedule_id
-  const entryCache = new Map<string, number>(); // "scheduleId:stepId:date" -> entry_id
-
-  // First, fetch existing schedules
-  const existingSchedulesResult = await db.execute(`
-    SELECT id, order_id, week_start_date, build_version_id FROM schedules
-  `);
-  for (const row of existingSchedulesResult.rows) {
-    const key = `${row.order_id}:${row.week_start_date}:${row.build_version_id || 'null'}`;
-    scheduleCache.set(key, row.id as number);
-  }
-
-  // Fetch existing schedule entries
-  const existingEntriesResult = await db.execute(`
-    SELECT id, schedule_id, product_step_id, date FROM schedule_entries
-  `);
-  for (const row of existingEntriesResult.rows) {
-    const key = `${row.schedule_id}:${row.product_step_id}:${row.date}`;
-    entryCache.set(key, row.id as number);
-  }
-
-  for (const row of validation.preview.rows) {
-    // Calculate week start date
-    const date = new Date(row.workDate);
-    const dayOfWeek = date.getDay();
-    const weekStart = new Date(date);
-    weekStart.setDate(date.getDate() - dayOfWeek);
-    const weekStartStr = weekStart.toISOString().split('T')[0]!;
-
-    // Get or create schedule (now includes build_version_id)
-    const scheduleKey = `${row.orderId}:${weekStartStr}:${row.buildVersionId}`;
-    let scheduleId = scheduleCache.get(scheduleKey);
-
-    if (!scheduleId) {
-      const scheduleResult = await db.execute({
-        sql: "INSERT INTO schedules (order_id, week_start_date, build_version_id) VALUES (?, ?, ?)",
-        args: [row.orderId!, weekStartStr, row.buildVersionId!],
-      });
-      scheduleId = Number(scheduleResult.lastInsertRowid);
-      scheduleCache.set(scheduleKey, scheduleId);
-      schedulesCreated++;
-    }
-
-    // Get or create schedule entry (unique per step + date + time slot)
-    const entryKey = `${scheduleId}:${row.productStepId}:${row.workDate}:${row.startTime}`;
-    let entryId = entryCache.get(entryKey);
-
-    if (!entryId) {
-      // Use the work session times as the entry's planned times
-      const entryResult = await db.execute({
-        sql: `INSERT INTO schedule_entries
-              (schedule_id, product_step_id, date, start_time, end_time, planned_output, status)
-              VALUES (?, ?, ?, ?, ?, ?, 'completed')`,
-        args: [scheduleId, row.productStepId, row.workDate, row.startTime, row.endTime, row.units],
-      });
-      entryId = Number(entryResult.lastInsertRowid);
-      entryCache.set(entryKey, entryId);
-      entriesCreated++;
-    }
-
-    // Create task worker assignment
-    const startDateTime = `${row.workDate}T${row.startTime}`;
-    const endDateTime = `${row.workDate}T${row.endTime}`;
-
-    await db.execute({
-      sql: `INSERT INTO task_worker_assignments
-            (schedule_entry_id, worker_id, actual_start_time, actual_end_time, actual_output, status)
-            VALUES (?, ?, ?, ?, ?, 'completed')`,
-      args: [entryId, row.workerId, startDateTime, endDateTime, row.units],
-    });
-    assignmentsCreated++;
-  }
-
-  return { schedulesCreated, entriesCreated, assignmentsCreated };
-}
-
-/**
- * Calculate and insert worker proficiencies based on production history
- */
-async function deriveProficiencies(): Promise<{ proficienciesCreated: number; proficienciesUpdated: number }> {
-  let proficienciesCreated = 0;
-  let proficienciesUpdated = 0;
-
-  // Get all production data grouped by worker and step
-  const productionResult = await db.execute(`
-    SELECT
-      twa.worker_id,
-      se.product_step_id,
-      ps.time_per_piece_seconds as expected_time_per_piece,
-      SUM(twa.actual_output) as total_output,
-      SUM(
-        (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24 * 3600
-      ) as total_seconds
-    FROM task_worker_assignments twa
-    JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-    JOIN product_steps ps ON se.product_step_id = ps.id
-    WHERE twa.actual_output > 0
-      AND twa.actual_start_time IS NOT NULL
-      AND twa.actual_end_time IS NOT NULL
-    GROUP BY twa.worker_id, se.product_step_id
-  `);
-
-  for (const row of productionResult.rows) {
-    const workerId = row.worker_id as number;
-    const stepId = row.product_step_id as number;
-    const expectedTimePerPiece = row.expected_time_per_piece as number;
-    const totalOutput = row.total_output as number;
-    const totalSeconds = row.total_seconds as number;
-
-    if (totalOutput <= 0 || totalSeconds <= 0) continue;
-
-    // Calculate efficiency: expected time / actual time
-    const expectedTotalTime = expectedTimePerPiece * totalOutput;
-    const efficiency = (expectedTotalTime / totalSeconds) * 100;
-
-    // Map efficiency to proficiency level (1-5)
-    let level: number;
-    if (efficiency < 60) {
-      level = 1;
-    } else if (efficiency < 80) {
-      level = 2;
-    } else if (efficiency < 100) {
-      level = 3;
-    } else if (efficiency < 120) {
-      level = 4;
-    } else {
-      level = 5;
-    }
-
-    // Check if proficiency exists
-    const existingResult = await db.execute({
-      sql: "SELECT id, level FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?",
-      args: [workerId, stepId],
-    });
-
-    if (existingResult.rows.length > 0) {
-      // Update existing
-      await db.execute({
-        sql: "UPDATE worker_proficiencies SET level = ?, updated_at = CURRENT_TIMESTAMP WHERE worker_id = ? AND product_step_id = ?",
-        args: [level, workerId, stepId],
-      });
-      proficienciesUpdated++;
-    } else {
-      // Insert new
-      await db.execute({
-        sql: "INSERT INTO worker_proficiencies (worker_id, product_step_id, level) VALUES (?, ?, ?)",
-        args: [workerId, stepId, level],
-      });
-      proficienciesCreated++;
-    }
-  }
-
-  return { proficienciesCreated, proficienciesUpdated };
-}
-
-export async function handleImports(request: Request): Promise<Response | null> {
-  const url = new URL(request.url);
-
-  // Clean up expired tokens on each request
-  cleanupExpiredTokens();
-
-  // POST /api/imports/equipment-matrix/preview
-  if (url.pathname === "/api/imports/equipment-matrix/preview" && request.method === "POST") {
-    try {
-      const body = await request.json() as { content: string; format?: 'tsv' | 'csv' };
-
-      if (!body.content) {
-        return Response.json({ error: "Missing required field: content" }, { status: 400 });
-      }
-
-      const format = body.format || 'tsv';
-      const parsed = parseEquipmentMatrix(body.content, format);
-      const existing = await getExistingData();
-      const validation = validateEquipmentMatrix(parsed, existing);
-
-      const token = generateToken();
-      previewStore.set(token, {
-        type: 'equipment-matrix',
-        data: parsed,
-        validation,
-        createdAt: Date.now(),
-      });
-
-      return Response.json({
-        success: true,
-        preview: validation.preview,
-        errors: validation.errors,
-        warnings: validation.warnings,
-        importToken: token,
-      });
-    } catch (error) {
-      return Response.json({ error: (error as Error).message }, { status: 400 });
-    }
-  }
-
-  // POST /api/imports/equipment-matrix/confirm
-  if (url.pathname === "/api/imports/equipment-matrix/confirm" && request.method === "POST") {
-    try {
-      const body = await request.json() as { importToken: string };
-
-      if (!body.importToken) {
-        return Response.json({ error: "Missing required field: importToken" }, { status: 400 });
-      }
-
-      const previewData = previewStore.get(body.importToken);
-      if (!previewData) {
-        return Response.json({ error: "Import session not found or expired" }, { status: 404 });
-      }
-
-      if (previewData.type !== 'equipment-matrix') {
-        return Response.json({ error: "Invalid import token type" }, { status: 400 });
-      }
-
-      // Check if validation passed
-      if (!previewData.validation.valid) {
-        return Response.json({
-          error: "Cannot import: validation errors exist",
-          errors: previewData.validation.errors,
-        }, { status: 400 });
-      }
-
-      // Execute import
-      const result = await executeEquipmentMatrixImport(previewData.data as ParsedEquipmentMatrix);
-
-      // Remove the token
-      previewStore.delete(body.importToken);
-
-      return Response.json({
-        success: true,
-        result,
-      });
-    } catch (error) {
-      return Response.json({ error: (error as Error).message }, { status: 500 });
-    }
-  }
-
-  // POST /api/imports/product-steps/preview
-  if (url.pathname === "/api/imports/product-steps/preview" && request.method === "POST") {
-    try {
-      const body = await request.json() as {
-        content: string;
-        format?: 'tsv' | 'csv';
-        productId?: number;
-        productName?: string;
-      };
-
-      if (!body.content) {
-        return Response.json({ error: "Missing required field: content" }, { status: 400 });
-      }
-
-      // Validate product specification
-      if (!body.productId && !body.productName) {
-        return Response.json({
-          error: "Must specify either productId (existing product) or productName (create new product)",
-        }, { status: 400 });
-      }
-
-      // If productId specified, verify it exists
-      if (body.productId) {
-        const productResult = await db.execute({
-          sql: "SELECT id FROM products WHERE id = ?",
-          args: [body.productId],
-        });
-        if (productResult.rows.length === 0) {
-          return Response.json({ error: `Product with id ${body.productId} not found` }, { status: 404 });
-        }
-      }
-
-      const format = body.format || 'tsv';
-      const parsed = parseProductSteps(body.content, format);
-      const existing = await getExistingData();
-      const validation = validateProductSteps(parsed, existing);
-
-      const token = generateToken();
-      previewStore.set(token, {
-        type: 'product-steps',
-        data: parsed,
-        validation,
-        productId: body.productId,
-        productName: body.productName,
-        createdAt: Date.now(),
-      });
-
-      return Response.json({
-        success: true,
-        preview: validation.preview,
-        errors: validation.errors,
-        warnings: validation.warnings,
-        importToken: token,
-        productInfo: body.productId
-          ? { id: body.productId, action: 'use_existing' }
-          : { name: body.productName, action: 'create_new' },
-      });
-    } catch (error) {
-      return Response.json({ error: (error as Error).message }, { status: 400 });
-    }
-  }
-
-  // POST /api/imports/product-steps/confirm
-  if (url.pathname === "/api/imports/product-steps/confirm" && request.method === "POST") {
-    try {
-      const body = await request.json() as { importToken: string };
-
-      if (!body.importToken) {
-        return Response.json({ error: "Missing required field: importToken" }, { status: 400 });
-      }
-
-      const previewData = previewStore.get(body.importToken);
-      if (!previewData) {
-        return Response.json({ error: "Import session not found or expired" }, { status: 404 });
-      }
-
-      if (previewData.type !== 'product-steps') {
-        return Response.json({ error: "Invalid import token type" }, { status: 400 });
-      }
-
-      // Check if validation passed
-      if (!previewData.validation.valid) {
-        return Response.json({
-          error: "Cannot import: validation errors exist",
-          errors: previewData.validation.errors,
-        }, { status: 400 });
-      }
-
-      // Get or create product
-      let productId = previewData.productId;
-      let productCreated = false;
-
-      if (!productId && previewData.productName) {
-        const result = await db.execute({
-          sql: "INSERT INTO products (name) VALUES (?)",
-          args: [previewData.productName],
-        });
-        productId = Number(result.lastInsertRowid);
-        productCreated = true;
-      }
-
-      if (!productId) {
-        return Response.json({ error: "No product specified" }, { status: 400 });
-      }
-
-      // Execute import
-      const result = await executeProductStepsImport(previewData.data as ParsedProductSteps, productId);
-
-      // Remove the token
-      previewStore.delete(body.importToken);
-
-      return Response.json({
-        success: true,
-        productId,
-        productCreated,
-        result,
-      });
-    } catch (error) {
-      return Response.json({ error: (error as Error).message }, { status: 500 });
-    }
-  }
-
-  // POST /api/imports/production-data/preview
-  if (url.pathname === "/api/imports/production-data/preview" && request.method === "POST") {
-    try {
-      const body = await request.json() as { content: string; format?: 'tsv' | 'csv' };
-
-      if (!body.content) {
-        return Response.json({ error: "Missing required field: content" }, { status: 400 });
-      }
-
-      const format = body.format || 'csv';
-      const parsed = parseProductionData(body.content, format);
-      const existing = await getProductionDataExistingData();
-      const validation = validateProductionData(parsed, existing);
-
-      const token = generateToken();
-      previewStore.set(token, {
-        type: 'production-data',
-        data: parsed,
-        validation,
-        createdAt: Date.now(),
-      });
-
-      return Response.json({
-        success: true,
-        preview: validation.preview,
-        errors: validation.errors,
-        warnings: validation.warnings,
-        importToken: token,
-      });
-    } catch (error) {
-      return Response.json({ error: (error as Error).message }, { status: 400 });
-    }
-  }
-
-  // POST /api/imports/production-data/confirm
-  if (url.pathname === "/api/imports/production-data/confirm" && request.method === "POST") {
-    try {
-      const body = await request.json() as { importToken: string };
-
-      if (!body.importToken) {
-        return Response.json({ error: "Missing required field: importToken" }, { status: 400 });
-      }
-
-      const previewData = previewStore.get(body.importToken);
-      if (!previewData) {
-        return Response.json({ error: "Import session not found or expired" }, { status: 404 });
-      }
-
-      if (previewData.type !== 'production-data') {
-        return Response.json({ error: "Invalid import token type" }, { status: 400 });
-      }
-
-      // Check if validation passed
-      if (!previewData.validation.valid) {
-        return Response.json({
-          error: "Cannot import: validation errors exist",
-          errors: previewData.validation.errors,
-        }, { status: 400 });
-      }
-
-      // Execute import
-      const result = await executeProductionDataImport(
-        previewData.validation as ProductionDataValidationResult
-      );
-
-      // Remove the token
-      previewStore.delete(body.importToken);
-
-      return Response.json({
-        success: true,
-        result,
-      });
-    } catch (error) {
-      return Response.json({ error: (error as Error).message }, { status: 500 });
-    }
-  }
-
-  // ============================================================================
-  // NEW V2 IMPORT ROUTES
-  // ============================================================================
-
-  // POST /api/imports/products/preview
-  if (url.pathname === "/api/imports/products/preview" && request.method === "POST") {
-    try {
-      const body = await request.json() as { content: string; format?: 'tsv' | 'csv' };
-
-      if (!body.content) {
-        return Response.json({ error: "Missing required field: content" }, { status: 400 });
-      }
-
-      const format = body.format || 'csv';
-      const parsed = parseProducts(body.content, format);
-      const existing = await getExistingData();
-      const validation = validateProducts(parsed, existing);
-
-      const token = generateToken();
-      previewStore.set(token, {
-        type: 'products',
-        data: parsed,
-        validation,
-        createdAt: Date.now(),
-      });
-
-      return Response.json({
-        success: true,
-        preview: validation.preview,
-        errors: validation.errors,
-        warnings: validation.warnings,
-        importToken: token,
-      });
-    } catch (error) {
-      return Response.json({ error: (error as Error).message }, { status: 400 });
-    }
-  }
-
-  // POST /api/imports/products/confirm
-  if (url.pathname === "/api/imports/products/confirm" && request.method === "POST") {
-    try {
-      const body = await request.json() as { importToken: string };
-
-      if (!body.importToken) {
-        return Response.json({ error: "Missing required field: importToken" }, { status: 400 });
-      }
-
-      const previewData = previewStore.get(body.importToken);
-      if (!previewData) {
-        return Response.json({ error: "Import session not found or expired" }, { status: 404 });
-      }
-
-      if (previewData.type !== 'products') {
-        return Response.json({ error: "Invalid import token type" }, { status: 400 });
-      }
-
-      if (!previewData.validation.valid) {
-        return Response.json({
-          error: "Cannot import: validation errors exist",
-          errors: previewData.validation.errors,
-        }, { status: 400 });
-      }
-
-      const result = await executeProductsImport(
-        previewData.data as ParsedProducts,
-        previewData.validation as ProductsValidationResult
-      );
-
-      previewStore.delete(body.importToken);
-
-      return Response.json({
-        success: true,
-        result,
-      });
-    } catch (error) {
-      return Response.json({ error: (error as Error).message }, { status: 500 });
-    }
-  }
-
-  // POST /api/imports/orders/preview
-  if (url.pathname === "/api/imports/orders/preview" && request.method === "POST") {
-    try {
-      const body = await request.json() as { content: string; format?: 'tsv' | 'csv' };
-
-      if (!body.content) {
-        return Response.json({ error: "Missing required field: content" }, { status: 400 });
-      }
-
-      const format = body.format || 'csv';
-      const parsed = parseOrders(body.content, format);
-      const existing = await getOrdersExistingData();
-      const validation = validateOrders(parsed, existing);
-
-      const token = generateToken();
-      previewStore.set(token, {
-        type: 'orders',
-        data: parsed,
-        validation,
-        createdAt: Date.now(),
-      });
-
-      return Response.json({
-        success: true,
-        preview: validation.preview,
-        errors: validation.errors,
-        warnings: validation.warnings,
-        importToken: token,
-      });
-    } catch (error) {
-      return Response.json({ error: (error as Error).message }, { status: 400 });
-    }
-  }
-
-  // POST /api/imports/orders/confirm
-  if (url.pathname === "/api/imports/orders/confirm" && request.method === "POST") {
-    try {
-      const body = await request.json() as { importToken: string };
-
-      if (!body.importToken) {
-        return Response.json({ error: "Missing required field: importToken" }, { status: 400 });
-      }
-
-      const previewData = previewStore.get(body.importToken);
-      if (!previewData) {
-        return Response.json({ error: "Import session not found or expired" }, { status: 404 });
-      }
-
-      if (previewData.type !== 'orders') {
-        return Response.json({ error: "Invalid import token type" }, { status: 400 });
-      }
-
-      if (!previewData.validation.valid) {
-        return Response.json({
-          error: "Cannot import: validation errors exist",
-          errors: previewData.validation.errors,
-        }, { status: 400 });
-      }
-
-      const result = await executeOrdersImport(previewData.validation as OrdersValidationResult);
-
-      previewStore.delete(body.importToken);
-
-      return Response.json({
-        success: true,
-        result,
-      });
-    } catch (error) {
-      return Response.json({ error: (error as Error).message }, { status: 500 });
-    }
-  }
-
-  // POST /api/imports/production-history/preview
-  if (url.pathname === "/api/imports/production-history/preview" && request.method === "POST") {
-    try {
-      const body = await request.json() as { content: string; format?: 'tsv' | 'csv' };
-
-      if (!body.content) {
-        return Response.json({ error: "Missing required field: content" }, { status: 400 });
-      }
-
-      const format = body.format || 'csv';
-      const parsed = parseProductionDataV2(body.content, format);
-      const existing = await getProductionDataV2ExistingData();
-      const validation = validateProductionDataV2(parsed, existing);
-
-      const token = generateToken();
-      previewStore.set(token, {
-        type: 'production-history',
-        data: parsed,
-        validation,
-        createdAt: Date.now(),
-      });
-
-      return Response.json({
-        success: true,
-        preview: validation.preview,
-        errors: validation.errors,
-        warnings: validation.warnings,
-        importToken: token,
-      });
-    } catch (error) {
-      return Response.json({ error: (error as Error).message }, { status: 400 });
-    }
-  }
-
-  // POST /api/imports/production-history/confirm
-  if (url.pathname === "/api/imports/production-history/confirm" && request.method === "POST") {
-    try {
-      const body = await request.json() as { importToken: string; deriveProficiencies?: boolean };
-
-      if (!body.importToken) {
-        return Response.json({ error: "Missing required field: importToken" }, { status: 400 });
-      }
-
-      const previewData = previewStore.get(body.importToken);
-      if (!previewData) {
-        return Response.json({ error: "Import session not found or expired" }, { status: 404 });
-      }
-
-      if (previewData.type !== 'production-history') {
-        return Response.json({ error: "Invalid import token type" }, { status: 400 });
-      }
-
-      if (!previewData.validation.valid) {
-        return Response.json({
-          error: "Cannot import: validation errors exist",
-          errors: previewData.validation.errors,
-        }, { status: 400 });
-      }
-
-      const result = await executeProductionDataV2Import(
-        previewData.validation as ProductionDataV2ValidationResult
-      );
-
-      // Optionally derive proficiencies
-      let proficiencyResult = null;
-      if (body.deriveProficiencies !== false) {
-        proficiencyResult = await deriveProficiencies();
-      }
-
-      previewStore.delete(body.importToken);
-
-      return Response.json({
-        success: true,
-        result,
-        proficiencies: proficiencyResult,
-      });
-    } catch (error) {
-      return Response.json({ error: (error as Error).message }, { status: 500 });
-    }
-  }
-
-  // POST /api/imports/derive-proficiencies
-  if (url.pathname === "/api/imports/derive-proficiencies" && request.method === "POST") {
-    try {
-      const result = await deriveProficiencies();
-      return Response.json({
-        success: true,
-        result,
-      });
-    } catch (error) {
-      return Response.json({ error: (error as Error).message }, { status: 500 });
-    }
-  }
-
-  return null;
-}
-
-// Export functions for use by seed.ts
-export {
-  getExistingData,
-  getOrdersExistingData,
-  getProductionDataV2ExistingData,
-  executeEquipmentMatrixImport,
-  executeProductsImport,
-  executeOrdersImport,
-  executeProductionDataV2Import,
-  deriveProficiencies,
-};

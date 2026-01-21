@@ -304,14 +304,14 @@ async function handleDeleteWorker(workerId: number): Promise<Response> {
     return Response.json({ error: "Worker not found" }, { status: 404 });
   }
 
-  // Check if worker has any scheduled entries
-  const schedulesResult = await db.execute({
-    sql: "SELECT id FROM schedule_entries WHERE worker_id = ?",
+  // Check if worker has any task assignments
+  const assignmentsResult = await db.execute({
+    sql: "SELECT id FROM task_assignments WHERE worker_id = ?",
     args: [workerId]
   });
 
-  if (schedulesResult.rows.length > 0) {
-    return Response.json({ error: "Cannot delete worker with scheduled entries" }, { status: 409 });
+  if (assignmentsResult.rows.length > 0) {
+    return Response.json({ error: "Cannot delete worker with task assignments" }, { status: 409 });
   }
 
   await db.execute({
@@ -338,23 +338,19 @@ async function handleWorkerStats(workerId: number, days: number = 30): Promise<R
     return Response.json({ error: "Worker not found" }, { status: 404 });
   }
 
-  // Get overall performance stats from task_worker_assignments
+  const daysAgo = new Date(Date.now() - days * 86400000).toISOString().split("T")[0]!;
+
+  // Get overall performance stats from production_history
   const overallStatsResult = await db.execute({
     sql: `
       SELECT
         COUNT(*) as total_tasks,
-        COALESCE(SUM(actual_output), 0) as total_output,
-        COALESCE(SUM(
-          CASE
-            WHEN actual_start_time IS NOT NULL AND actual_end_time IS NOT NULL
-            THEN (julianday(actual_end_time) - julianday(actual_start_time)) * 24
-            ELSE 0
-          END
-        ), 0) as total_hours
-      FROM task_worker_assignments
-      WHERE worker_id = ? AND status = 'completed'
+        COALESCE(SUM(units_produced), 0) as total_output,
+        COALESCE(SUM(actual_seconds), 0) / 3600.0 as total_hours
+      FROM production_history
+      WHERE worker_id = ? AND date >= ?
     `,
-    args: [workerId]
+    args: [workerId, daysAgo]
   });
   const overallStats = overallStatsResult.rows[0] as unknown as {
     total_tasks: number;
@@ -362,36 +358,22 @@ async function handleWorkerStats(workerId: number, days: number = 30): Promise<R
     total_hours: number;
   };
 
-  // Get per-step performance breakdown
+  // Get per-step performance breakdown from production_history
   const stepStatsResult = await db.execute({
     sql: `
       SELECT
-        ps.id as step_id,
-        ps.name as step_name,
-        ps.time_per_piece_seconds as estimated_seconds,
-        p.name as product_name,
+        ph.bom_step_id as step_id,
+        ph.step_name,
+        bs.time_per_piece_seconds as estimated_seconds,
+        ph.fishbowl_bom_num as product_name,
         COUNT(*) as times_performed,
-        SUM(twa.actual_output) as total_output,
-        SUM(
-          CASE
-            WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-            THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24 * 3600
-            ELSE 0
-          END
-        ) as total_seconds,
-        AVG(
-          CASE
-            WHEN twa.actual_output > 0 AND twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-            THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24 * 3600 / twa.actual_output
-            ELSE NULL
-          END
-        ) as avg_seconds_per_piece
-      FROM task_worker_assignments twa
-      JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-      JOIN product_steps ps ON se.product_step_id = ps.id
-      JOIN products p ON ps.product_id = p.id
-      WHERE twa.worker_id = ? AND twa.status = 'completed' AND twa.actual_output > 0
-      GROUP BY ps.id
+        SUM(ph.units_produced) as total_output,
+        SUM(ph.actual_seconds) as total_seconds,
+        AVG(CASE WHEN ph.units_produced > 0 THEN ph.actual_seconds * 1.0 / ph.units_produced ELSE NULL END) as avg_seconds_per_piece
+      FROM production_history ph
+      LEFT JOIN bom_steps bs ON ph.bom_step_id = bs.id
+      WHERE ph.worker_id = ? AND ph.units_produced > 0
+      GROUP BY ph.bom_step_id, ph.step_name
       ORDER BY total_output DESC
     `,
     args: [workerId]
@@ -416,30 +398,35 @@ async function handleWorkerStats(workerId: number, days: number = 30): Promise<R
         : null,
   }));
 
-  // Get proficiencies
-  const proficienciesResult = await db.execute({
+  // Get step performance from worker_step_performance table (aggregated metrics)
+  const performanceResult = await db.execute({
     sql: `
       SELECT
-        wp.id,
-        wp.product_step_id,
-        wp.level,
-        ps.name as step_name,
-        p.name as product_name
-      FROM worker_proficiencies wp
-      JOIN product_steps ps ON wp.product_step_id = ps.id
-      JOIN products p ON ps.product_id = p.id
-      WHERE wp.worker_id = ?
-      ORDER BY p.name, ps.sequence
+        wsp.bom_step_id,
+        bs.name as step_name,
+        bs.fishbowl_bom_num as product_name,
+        wsp.avg_efficiency_percent,
+        wsp.trend
+      FROM worker_step_performance wsp
+      JOIN bom_steps bs ON wsp.bom_step_id = bs.id
+      WHERE wsp.worker_id = ?
+      ORDER BY wsp.avg_efficiency_percent DESC
     `,
     args: [workerId]
   });
-  const proficiencies = proficienciesResult.rows as unknown as {
-    id: number;
-    product_step_id: number;
-    level: number;
+  const proficiencies = (performanceResult.rows as unknown as {
+    bom_step_id: number;
     step_name: string;
     product_name: string;
-  }[];
+    avg_efficiency_percent: number | null;
+    trend: string | null;
+  }[]).map(row => ({
+    id: row.bom_step_id,
+    product_step_id: row.bom_step_id,
+    level: row.avg_efficiency_percent ? Math.round(row.avg_efficiency_percent / 20) : 0, // Convert to 1-5 scale
+    step_name: row.step_name,
+    product_name: row.product_name,
+  }));
 
   // Get certifications
   const certificationsResult = await db.execute({
@@ -458,27 +445,17 @@ async function handleWorkerStats(workerId: number, days: number = 30): Promise<R
     equipment_name: string;
   }[];
 
-  // Get daily production for recent days (use se.date like dashboard for consistency)
-  const daysAgo = new Date(Date.now() - days * 86400000).toISOString().split("T")[0]!;
+  // Get daily production for recent days from production_history
   const dailyProductionResult = await db.execute({
     sql: `
       SELECT
-        se.date,
-        COALESCE(SUM(twa.actual_output), 0) as output,
-        COALESCE(SUM(
-          CASE
-            WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-            THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            ELSE 0
-          END
-        ), 0) as hours
-      FROM schedule_entries se
-      JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-      WHERE twa.worker_id = ?
-        AND twa.status = 'completed'
-        AND se.date >= ?
-      GROUP BY se.date
-      ORDER BY se.date ASC
+        date,
+        COALESCE(SUM(units_produced), 0) as output,
+        COALESCE(SUM(actual_seconds), 0) / 3600.0 as hours
+      FROM production_history
+      WHERE worker_id = ? AND date >= ?
+      GROUP BY date
+      ORDER BY date ASC
     `,
     args: [workerId, daysAgo]
   });
@@ -488,7 +465,6 @@ async function handleWorkerStats(workerId: number, days: number = 30): Promise<R
     output: number;
     hours: number;
   }[]).map(row => {
-    // Parse date as local time to get correct day name
     const [year, month, day] = row.date.split('-').map(Number);
     const dateObj = new Date(year!, month! - 1, day!);
     return {
@@ -497,7 +473,7 @@ async function handleWorkerStats(workerId: number, days: number = 30): Promise<R
     };
   });
 
-  // Calculate team averages for comparison
+  // Calculate team averages for comparison from production_history
   const teamAveragesResult = await db.execute({
     sql: `
       SELECT
@@ -507,20 +483,15 @@ async function handleWorkerStats(workerId: number, days: number = 30): Promise<R
       FROM (
         SELECT
           worker_id,
-          SUM(actual_output) as worker_total,
-          SUM(
-            CASE
-              WHEN actual_start_time IS NOT NULL AND actual_end_time IS NOT NULL
-              THEN (julianday(actual_end_time) - julianday(actual_start_time)) * 24
-              ELSE 0
-            END
-          ) as worker_hours,
+          SUM(units_produced) as worker_total,
+          SUM(actual_seconds) / 3600.0 as worker_hours,
           COUNT(*) as worker_tasks
-        FROM task_worker_assignments
-        WHERE status = 'completed'
+        FROM production_history
+        WHERE date >= ?
         GROUP BY worker_id
       )
-    `
+    `,
+    args: [daysAgo]
   });
   const teamAverages = teamAveragesResult.rows[0] as unknown as {
     avg_output: number | null;

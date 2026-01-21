@@ -1,20 +1,19 @@
-import { handleProducts } from "./routes/products";
-import { handleOrders } from "./routes/orders";
-import { handleSchedules } from "./routes/schedules";
-import { handleScheduleEntries } from "./routes/schedule-entries";
+// Core routes (new architecture)
+import { handleFishbowl } from "./routes/fishbowl";
+import { handleDemand } from "./routes/demand";
+import { handlePlanning } from "./routes/planning";
+import { handleTasks } from "./routes/tasks";
+import { handleBOMSteps } from "./routes/bom-steps";
+
+// Setup routes
 import { handleEquipment } from "./routes/equipment";
 import { handleWorkers } from "./routes/workers";
 import { handleCertifications } from "./routes/certifications";
-import { handleProficiencies } from "./routes/proficiencies";
-import { handleAnalytics } from "./routes/analytics";
-import { handleScheduling } from "./routes/scheduling";
+import { handleWorkCategories } from "./routes/work-categories";
+import { handleDashboard } from "./routes/dashboard";
 import { handleImports } from "./routes/imports";
 import { handleExports } from "./routes/exports";
-import { handleDashboard } from "./routes/dashboard";
-import { handleWorkCategories } from "./routes/work-categories";
-import { handleBuildVersions } from "./routes/build-versions";
 import { handleProductionSummary } from "./routes/production-summary";
-import { handlePlan } from "./routes/plan";
 
 // Admin frontend
 import adminHtml from "./admin/index.html";
@@ -82,27 +81,32 @@ const server = Bun.serve({
       // Route handlers
       let response: Response | null = null;
 
+      response = await handleFishbowl(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
+
+      response = await handleDemand(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
+
+      response = await handlePlanning(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
+
+      response = await handleTasks(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
+
+      response = await handleBOMSteps(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
+
       response = await handleDashboard(request);
-      if (response) {
-        return addCorsHeaders(response);
-      }
-
-      response = await handleProducts(request);
-      if (response) {
-        return addCorsHeaders(response);
-      }
-
-      response = await handleOrders(request);
-      if (response) {
-        return addCorsHeaders(response);
-      }
-
-      response = await handleSchedules(request);
-      if (response) {
-        return addCorsHeaders(response);
-      }
-
-      response = await handleScheduleEntries(request);
       if (response) {
         return addCorsHeaders(response);
       }
@@ -122,21 +126,6 @@ const server = Bun.serve({
         return addCorsHeaders(response);
       }
 
-      response = await handleProficiencies(request);
-      if (response) {
-        return addCorsHeaders(response);
-      }
-
-      response = await handleAnalytics(request);
-      if (response) {
-        return addCorsHeaders(response);
-      }
-
-      response = await handleScheduling(request);
-      if (response) {
-        return addCorsHeaders(response);
-      }
-
       response = await handleImports(request);
       if (response) {
         return addCorsHeaders(response);
@@ -152,17 +141,7 @@ const server = Bun.serve({
         return addCorsHeaders(response);
       }
 
-      response = await handleBuildVersions(request);
-      if (response) {
-        return addCorsHeaders(response);
-      }
-
       response = await handleProductionSummary(request);
-      if (response) {
-        return addCorsHeaders(response);
-      }
-
-      response = await handlePlan(request);
       if (response) {
         return addCorsHeaders(response);
       }

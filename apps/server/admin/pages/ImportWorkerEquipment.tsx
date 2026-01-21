@@ -15,27 +15,22 @@ interface ValidationWarning {
 }
 
 interface PreviewResponse {
-  success: boolean;
+  token: string;
   preview: {
-    equipment: { name: string; description: string; action: string }[];
-    workers: { name: string; action: string }[];
-    summary: {
-      equipmentToCreate: number;
-      equipmentExisting: number;
-      workersToCreate: number;
-      workersExisting: number;
-      certificationsToCreate: number;
-      workCategoriesToCreate: number;
-    };
+    workCategories: number;
+    equipment: number;
+    workers: number;
+    certifications: number;
+    sampleWorkers: string[];
+    sampleEquipment: string[];
   };
-  errors: ValidationError[];
-  warnings: ValidationWarning[];
-  importToken: string;
+  errors?: ValidationError[];
+  warnings?: ValidationWarning[];
 }
 
 interface ConfirmResponse {
   success: boolean;
-  result: {
+  created: {
     workCategoriesCreated: number;
     equipmentCreated: number;
     workersCreated: number;
@@ -95,7 +90,7 @@ export default function ImportWorkerEquipment() {
   };
 
   const handleConfirm = async () => {
-    if (!previewData?.importToken) return;
+    if (!previewData?.token) return;
 
     setLoading(true);
     setError(null);
@@ -104,7 +99,7 @@ export default function ImportWorkerEquipment() {
       const response = await fetch('/api/imports/equipment-matrix/confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ importToken: previewData.importToken }),
+        body: JSON.stringify({ token: previewData.token }),
       });
 
       const data = await response.json();
@@ -302,11 +297,11 @@ INS,Inspection,QC,100,0,Y,Y,Y`}</pre>
         <div className="preview-section">
           <h2>Preview</h2>
 
-          {previewData.errors.length > 0 && (
+          {(previewData.errors?.length ?? 0) > 0 && (
             <div className="validation-errors">
               <h3>Errors (must fix before importing)</h3>
               <ul>
-                {previewData.errors.map((err, i) => (
+                {previewData.errors?.map((err, i) => (
                   <li key={i}>
                     {err.row && <span className="row-num">Row {err.row}: </span>}
                     {err.field && <strong>{err.field}: </strong>}
@@ -317,11 +312,11 @@ INS,Inspection,QC,100,0,Y,Y,Y`}</pre>
             </div>
           )}
 
-          {previewData.warnings.length > 0 && (
+          {(previewData.warnings?.length ?? 0) > 0 && (
             <div className="validation-warnings">
               <h3>Warnings</h3>
               <ul>
-                {previewData.warnings.map((warn, i) => (
+                {previewData.warnings?.map((warn, i) => (
                   <li key={i}>
                     {warn.row && <span className="row-num">Row {warn.row}: </span>}
                     {warn.field && <strong>{warn.field}: </strong>}
@@ -337,31 +332,34 @@ INS,Inspection,QC,100,0,Y,Y,Y`}</pre>
             <table className="summary-table">
               <tbody>
                 <tr>
-                  <td>Equipment to Create</td>
-                  <td>{previewData.preview.summary.equipmentToCreate}</td>
+                  <td>Work Categories</td>
+                  <td>{previewData.preview.workCategories}</td>
                 </tr>
                 <tr>
-                  <td>Equipment Already Existing</td>
-                  <td>{previewData.preview.summary.equipmentExisting}</td>
+                  <td>Equipment</td>
+                  <td>{previewData.preview.equipment}</td>
                 </tr>
                 <tr>
-                  <td>Workers to Create</td>
-                  <td>{previewData.preview.summary.workersToCreate}</td>
+                  <td>Workers</td>
+                  <td>{previewData.preview.workers}</td>
                 </tr>
                 <tr>
-                  <td>Workers Already Existing</td>
-                  <td>{previewData.preview.summary.workersExisting}</td>
-                </tr>
-                <tr>
-                  <td>Certifications to Create</td>
-                  <td>{previewData.preview.summary.certificationsToCreate}</td>
-                </tr>
-                <tr>
-                  <td>Work Categories to Create</td>
-                  <td>{previewData.preview.summary.workCategoriesToCreate}</td>
+                  <td>Certifications</td>
+                  <td>{previewData.preview.certifications}</td>
                 </tr>
               </tbody>
             </table>
+
+            {previewData.preview.sampleWorkers?.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <strong>Sample Workers:</strong> {previewData.preview.sampleWorkers.join(', ')}
+              </div>
+            )}
+            {previewData.preview.sampleEquipment?.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <strong>Sample Equipment:</strong> {previewData.preview.sampleEquipment.join(', ')}
+              </div>
+            )}
           </div>
 
           <div className="preview-actions">
@@ -371,7 +369,7 @@ INS,Inspection,QC,100,0,Y,Y,Y`}</pre>
             <button
               className="btn btn-primary"
               onClick={handleConfirm}
-              disabled={previewData.errors.length > 0 || loading}
+              disabled={(previewData.errors?.length ?? 0) > 0 || loading}
             >
               {loading ? 'Importing...' : 'Confirm Import'}
             </button>
@@ -385,17 +383,17 @@ INS,Inspection,QC,100,0,Y,Y,Y`}</pre>
           <h2>Import Successful!</h2>
 
           <div className="result-summary">
-            {confirmResult.result.workCategoriesCreated > 0 && (
-              <p>Created {confirmResult.result.workCategoriesCreated} work categories</p>
+            {confirmResult.created.workCategoriesCreated > 0 && (
+              <p>Created {confirmResult.created.workCategoriesCreated} work categories</p>
             )}
-            {confirmResult.result.equipmentCreated > 0 && (
-              <p>Created {confirmResult.result.equipmentCreated} equipment</p>
+            {confirmResult.created.equipmentCreated > 0 && (
+              <p>Created {confirmResult.created.equipmentCreated} equipment</p>
             )}
-            {confirmResult.result.workersCreated > 0 && (
-              <p>Created {confirmResult.result.workersCreated} workers</p>
+            {confirmResult.created.workersCreated > 0 && (
+              <p>Created {confirmResult.created.workersCreated} workers</p>
             )}
-            {confirmResult.result.certificationsCreated > 0 && (
-              <p>Created {confirmResult.result.certificationsCreated} certifications</p>
+            {confirmResult.created.certificationsCreated > 0 && (
+              <p>Created {confirmResult.created.certificationsCreated} certifications</p>
             )}
           </div>
 
@@ -403,8 +401,8 @@ INS,Inspection,QC,100,0,Y,Y,Y`}</pre>
             <button className="btn btn-secondary" onClick={handleReset}>
               Import More
             </button>
-            <a href="/admin/import/products" className="btn btn-primary">
-              Next: Import Products →
+            <a href="/admin/import/product-steps" className="btn btn-primary">
+              Next: Import BOM Steps →
             </a>
           </div>
         </div>

@@ -148,30 +148,29 @@ export async function generateEquipmentMatrixCSV(): Promise<string> {
 }
 
 /**
- * Generate Products CSV
+ * Generate BOMs CSV (replaces old Products CSV)
  *
  * Format:
- * product_name,version_name,version_number,is_default,step_code,external_id,category,component,task_name,time_seconds,equipment_code,dependencies
+ * bom_num,config_name,version_number,is_default,step_code,category,component,task_name,time_seconds,equipment_code,dependencies
  */
 export async function generateProductsCSV(): Promise<string> {
-  // Get all products with their build versions
-  const versionsResult = await db.execute(`
+  // Get all BOM step configurations
+  const configsResult = await db.execute(`
     SELECT
-      p.id as product_id,
-      p.name as product_name,
-      bv.id as version_id,
-      bv.version_name,
-      bv.version_number,
-      bv.is_default
-    FROM products p
-    JOIN product_build_versions bv ON bv.product_id = p.id
-    ORDER BY p.name, bv.version_number
+      bsc.id as config_id,
+      bsc.fishbowl_bom_id,
+      bsc.fishbowl_bom_num as bom_num,
+      bsc.config_name,
+      bsc.version_number,
+      bsc.is_default
+    FROM bom_step_configurations bsc
+    ORDER BY bsc.fishbowl_bom_num, bsc.version_number
   `);
-  const versions = versionsResult.rows as unknown as {
-    product_id: number;
-    product_name: string;
-    version_id: number;
-    version_name: string;
+  const configs = configsResult.rows as unknown as {
+    config_id: number;
+    fishbowl_bom_id: number;
+    bom_num: string;
+    config_name: string;
     version_number: number;
     is_default: number;
   }[];
@@ -180,33 +179,34 @@ export async function generateProductsCSV(): Promise<string> {
 
   // Header
   lines.push(toCSVRow([
-    "product_name", "version_name", "version_number", "is_default",
-    "step_code", "external_id", "category", "component", "task_name",
+    "bom_num", "config_name", "version_number", "is_default",
+    "step_code", "category", "component", "task_name",
     "time_seconds", "equipment_code", "dependencies"
   ]));
 
-  // Process each version
-  for (const version of versions) {
-    // Get steps for this version via build_version_steps
+  // Process each configuration
+  for (const config of configs) {
+    // Get steps for this config via bom_config_steps
     const stepsResult = await db.execute({
       sql: `
         SELECT
-          ps.id as step_id,
-          ps.step_code,
-          ps.name as task_name,
-          ps.category,
-          ps.time_per_piece_seconds,
+          bs.id as step_id,
+          bs.step_code,
+          bs.name as task_name,
+          wc.name as category,
+          bs.time_per_piece_seconds,
           c.name as component_name,
           e.name as equipment_code,
-          bvs.sequence
-        FROM build_version_steps bvs
-        JOIN product_steps ps ON bvs.product_step_id = ps.id
-        LEFT JOIN components c ON ps.component_id = c.id
-        LEFT JOIN equipment e ON ps.equipment_id = e.id
-        WHERE bvs.build_version_id = ?
-        ORDER BY bvs.sequence
+          bcs.sequence
+        FROM bom_config_steps bcs
+        JOIN bom_steps bs ON bcs.bom_step_id = bs.id
+        LEFT JOIN work_categories wc ON bs.work_category_id = wc.id
+        LEFT JOIN components c ON bs.component_id = c.id
+        LEFT JOIN equipment e ON bs.equipment_id = e.id
+        WHERE bcs.config_id = ?
+        ORDER BY bcs.sequence
       `,
-      args: [version.version_id]
+      args: [config.config_id]
     });
     const steps = stepsResult.rows as unknown as {
       step_id: number;
@@ -219,7 +219,7 @@ export async function generateProductsCSV(): Promise<string> {
       sequence: number;
     }[];
 
-    // Get all dependencies for steps in this version
+    // Get all dependencies for steps in this config
     const stepIds = steps.map(s => s.step_id);
     let dependenciesMap = new Map<number, { step_code: string; type: string }[]>();
 
@@ -227,9 +227,9 @@ export async function generateProductsCSV(): Promise<string> {
       const placeholders = stepIds.map(() => "?").join(",");
       const depsResult = await db.execute({
         sql: `
-          SELECT sd.step_id, sd.dependency_type, ps.step_code
-          FROM step_dependencies sd
-          JOIN product_steps ps ON sd.depends_on_step_id = ps.id
+          SELECT sd.step_id, sd.dependency_type, bs.step_code
+          FROM bom_step_dependencies sd
+          JOIN bom_steps bs ON sd.depends_on_step_id = bs.id
           WHERE sd.step_id IN (${placeholders})
         `,
         args: stepIds
@@ -250,18 +250,16 @@ export async function generateProductsCSV(): Promise<string> {
     // Output each step as a row
     for (const step of steps) {
       const deps = dependenciesMap.get(step.step_id) || [];
-      // Format dependencies: "STEP_CODE" for finish type, "STEP_CODE:start" for start type
       const depsStr = deps.map(d =>
         d.type === "start" ? `${d.step_code}:start` : d.step_code
       ).join(",");
 
       lines.push(toCSVRow([
-        version.product_name,
-        version.version_name,
-        version.version_number,
-        version.is_default ? "Y" : "",
+        config.bom_num,
+        config.config_name,
+        config.version_number,
+        config.is_default ? "Y" : "",
         step.step_code || "",
-        "", // external_id - not stored in schema
         step.category || "",
         step.component_name || "",
         step.task_name,
@@ -276,37 +274,46 @@ export async function generateProductsCSV(): Promise<string> {
 }
 
 /**
- * Generate Orders CSV
+ * Generate Demand Entries CSV (replaces old Orders CSV)
  *
  * Format:
- * product_name,quantity,due_date,status
+ * bom_num,quantity,due_date,status,source,customer_name
  */
 export async function generateOrdersCSV(): Promise<string> {
-  const ordersResult = await db.execute(`
-    SELECT o.quantity, o.due_date, o.status, p.name as product_name
-    FROM orders o
-    JOIN products p ON o.product_id = p.id
-    ORDER BY o.due_date, p.name
+  const entriesResult = await db.execute(`
+    SELECT
+      fishbowl_bom_num,
+      quantity,
+      due_date,
+      status,
+      source,
+      customer_name
+    FROM demand_entries
+    ORDER BY due_date, fishbowl_bom_num
   `);
-  const orders = ordersResult.rows as unknown as {
+  const entries = entriesResult.rows as unknown as {
+    fishbowl_bom_num: string;
     quantity: number;
     due_date: string;
     status: string;
-    product_name: string;
+    source: string;
+    customer_name: string | null;
   }[];
 
   const lines: string[] = [];
 
   // Header
-  lines.push(toCSVRow(["product_name", "quantity", "due_date", "status"]));
+  lines.push(toCSVRow(["bom_num", "quantity", "due_date", "status", "source", "customer_name"]));
 
-  // Orders
-  for (const order of orders) {
+  // Demand entries
+  for (const entry of entries) {
     lines.push(toCSVRow([
-      order.product_name,
-      order.quantity,
-      formatDate(order.due_date),
-      order.status || "pending"
+      entry.fishbowl_bom_num,
+      entry.quantity,
+      formatDate(entry.due_date),
+      entry.status || "pending",
+      entry.source,
+      entry.customer_name || ""
     ]));
   }
 
@@ -314,68 +321,59 @@ export async function generateOrdersCSV(): Promise<string> {
 }
 
 /**
- * Generate Production History V2 CSV
+ * Generate Production History CSV
  *
  * Format:
- * product_name,due_date,version_name,step_code,worker_name,work_date,start_time,end_time,units_produced
+ * bom_num,step_name,worker_name,work_date,start_time,end_time,units_produced,actual_seconds,efficiency_percent
  */
 export async function generateProductionHistoryCSV(): Promise<string> {
   const result = await db.execute(`
     SELECT
-      p.name as product_name,
-      o.due_date,
-      bv.version_name,
-      ps.step_code,
-      w.name as worker_name,
-      se.date as work_date,
-      twa.actual_start_time,
-      twa.actual_end_time,
-      twa.actual_output as units_produced
-    FROM task_worker_assignments twa
-    JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-    JOIN schedules s ON se.schedule_id = s.id
-    JOIN orders o ON s.order_id = o.id
-    JOIN products p ON o.product_id = p.id
-    JOIN product_build_versions bv ON s.build_version_id = bv.id
-    JOIN product_steps ps ON se.product_step_id = ps.id
-    JOIN workers w ON twa.worker_id = w.id
-    WHERE twa.actual_output > 0
-      AND twa.actual_start_time IS NOT NULL
-      AND twa.actual_end_time IS NOT NULL
-    ORDER BY se.date, twa.actual_start_time
+      fishbowl_bom_num,
+      step_name,
+      worker_name,
+      date as work_date,
+      start_time,
+      end_time,
+      units_produced,
+      actual_seconds,
+      efficiency_percent
+    FROM production_history
+    WHERE units_produced > 0
+    ORDER BY date, start_time
   `);
   const rows = result.rows as unknown as {
-    product_name: string;
-    due_date: string;
-    version_name: string;
-    step_code: string | null;
+    fishbowl_bom_num: string;
+    step_name: string;
     worker_name: string;
     work_date: string;
-    actual_start_time: string;
-    actual_end_time: string;
+    start_time: string;
+    end_time: string;
     units_produced: number;
+    actual_seconds: number;
+    efficiency_percent: number | null;
   }[];
 
   const lines: string[] = [];
 
   // Header
   lines.push(toCSVRow([
-    "product_name", "due_date", "version_name", "step_code", "worker_name",
-    "work_date", "start_time", "end_time", "units_produced"
+    "bom_num", "step_name", "worker_name",
+    "work_date", "start_time", "end_time", "units_produced", "actual_seconds", "efficiency_percent"
   ]));
 
   // Data rows
   for (const row of rows) {
     lines.push(toCSVRow([
-      row.product_name,
-      formatDate(row.due_date),
-      row.version_name,
-      row.step_code || "",
+      row.fishbowl_bom_num,
+      row.step_name,
       row.worker_name,
       formatDate(row.work_date),
-      formatTime(row.actual_start_time),
-      formatTime(row.actual_end_time),
-      row.units_produced
+      formatTime(row.start_time),
+      formatTime(row.end_time),
+      row.units_produced,
+      row.actual_seconds,
+      row.efficiency_percent ?? ""
     ]));
   }
 

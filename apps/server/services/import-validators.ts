@@ -18,6 +18,10 @@ import type {
   ParsedOrder,
   ParsedProductionDataV2,
   ParsedProductionRowV2,
+  ParsedProductStepsFB,
+  ParsedProductStepFB,
+  ParsedProductionDataFB,
+  ParsedProductionRowFB,
 } from './import-parsers';
 
 export interface ValidationError {
@@ -987,6 +991,502 @@ export function validateProductionDataV2(
       summary: {
         totalRows: validatedRows.length,
         ordersAffected: uniqueOrders.size,
+        workersInvolved: uniqueWorkers.size,
+        stepsInvolved: uniqueSteps.size,
+        schedulesToCreate: uniqueOrderDates.size,
+        entriesToCreate: uniqueStepDates.size,
+        assignmentsToCreate: validatedRows.length,
+      },
+    },
+  };
+}
+
+// ============================================================================
+// FISHBOWL-AWARE VALIDATORS
+// ============================================================================
+
+// Product Steps with Fishbowl BOM reference validation
+export interface ProductStepsFBExistingData extends ExistingData {
+  // Fishbowl BOM num -> local product info (if already linked)
+  linkedProducts: Map<string, { id: number; name: string; fishbowlBomId: number | null }>;
+}
+
+export interface ProductStepsFBValidationResult {
+  valid: boolean;
+  errors: ValidationError[];
+  warnings: ValidationWarning[];
+  preview: {
+    boms: {
+      fishbowlBomNum: string;
+      productAction: 'create' | 'use_existing' | 'link_existing';
+      existingProductId?: number;
+      existingProductName?: string;
+      versions: {
+        versionName: string;
+        versionNumber: number;
+        isDefault: boolean;
+        stepCount: number;
+      }[];
+    }[];
+    components: { name: string; action: 'create' | 'exists' }[];
+    workCategories: string[];
+    summary: {
+      bomsToProcess: number;
+      productsToCreate: number;
+      productsToLink: number;
+      versionsToCreate: number;
+      stepsToCreate: number;
+      dependenciesToCreate: number;
+      componentsToCreate: number;
+      workCategoriesToCreate: number;
+    };
+  };
+}
+
+/**
+ * Detect circular dependencies within Fishbowl-aware version steps
+ */
+function detectCircularDependenciesFB(steps: ParsedProductStepFB[]): string[] {
+  const graph = new Map<string, string[]>();
+  const stepCodes = new Set(steps.map(s => s.stepCode));
+
+  for (const step of steps) {
+    graph.set(step.stepCode, step.dependencies.map(d => d.stepCode).filter(code => stepCodes.has(code)));
+  }
+
+  const visited = new Set<string>();
+  const recursionStack = new Set<string>();
+  const cycles: string[] = [];
+
+  function dfs(node: string, path: string[]): boolean {
+    visited.add(node);
+    recursionStack.add(node);
+
+    const neighbors = graph.get(node) || [];
+    for (const neighbor of neighbors) {
+      if (!visited.has(neighbor)) {
+        if (dfs(neighbor, [...path, neighbor])) {
+          return true;
+        }
+      } else if (recursionStack.has(neighbor)) {
+        const cycleStart = path.indexOf(neighbor);
+        const cycle = path.slice(cycleStart).join(' -> ') + ' -> ' + neighbor;
+        cycles.push(cycle);
+        return true;
+      }
+    }
+
+    recursionStack.delete(node);
+    return false;
+  }
+
+  for (const step of steps) {
+    if (!visited.has(step.stepCode)) {
+      dfs(step.stepCode, [step.stepCode]);
+    }
+  }
+
+  return cycles;
+}
+
+/**
+ * Validate Product Steps with Fishbowl BOM reference
+ * Auto-creates/links products to Fishbowl BOMs during import
+ */
+export function validateProductStepsFB(
+  parsed: ParsedProductStepsFB,
+  existing: ProductStepsFBExistingData,
+  fishbowlBomExists: (bomNum: string) => boolean // callback to check if BOM exists in Fishbowl
+): ProductStepsFBValidationResult {
+  const errors: ValidationError[] = [];
+  const warnings: ValidationWarning[] = [];
+
+  const bomPreviews: {
+    fishbowlBomNum: string;
+    productAction: 'create' | 'use_existing' | 'link_existing';
+    existingProductId?: number;
+    existingProductName?: string;
+    versions: {
+      versionName: string;
+      versionNumber: number;
+      isDefault: boolean;
+      stepCount: number;
+    }[];
+  }[] = [];
+
+  let productsToCreate = 0;
+  let productsToLink = 0;
+  let totalVersions = 0;
+  let totalSteps = 0;
+  let totalDependencies = 0;
+
+  // Validate each BOM
+  for (const [fishbowlBomNum, versions] of parsed.bomVersions) {
+    // Check if BOM exists in Fishbowl
+    if (!fishbowlBomExists(fishbowlBomNum)) {
+      errors.push({
+        message: `Fishbowl BOM "${fishbowlBomNum}" not found in Fishbowl database`,
+      });
+      continue;
+    }
+
+    // Determine product action
+    const linkedProduct = existing.linkedProducts.get(fishbowlBomNum);
+    let productAction: 'create' | 'use_existing' | 'link_existing';
+    let existingProductId: number | undefined;
+    let existingProductName: string | undefined;
+
+    if (linkedProduct && linkedProduct.fishbowlBomId) {
+      productAction = 'use_existing';
+      existingProductId = linkedProduct.id;
+      existingProductName = linkedProduct.name;
+    } else if (linkedProduct) {
+      productAction = 'link_existing';
+      existingProductId = linkedProduct.id;
+      existingProductName = linkedProduct.name;
+      productsToLink++;
+    } else {
+      productAction = 'create';
+      productsToCreate++;
+    }
+
+    const versionPreviews: {
+      versionName: string;
+      versionNumber: number;
+      isDefault: boolean;
+      stepCount: number;
+    }[] = [];
+
+    // Check for exactly one default version
+    const defaultVersions = [...versions.values()].filter(v => v.isDefault);
+    if (defaultVersions.length === 0) {
+      errors.push({
+        message: `BOM "${fishbowlBomNum}" has no default version. Mark one version with is_default=Y`,
+      });
+    } else if (defaultVersions.length > 1) {
+      errors.push({
+        message: `BOM "${fishbowlBomNum}" has multiple default versions`,
+      });
+    }
+
+    // Validate each version
+    for (const [versionNumber, version] of versions) {
+      totalVersions++;
+
+      // Check for duplicate step codes within version
+      const seenStepCodes = new Set<string>();
+      for (const step of version.steps) {
+        if (seenStepCodes.has(step.stepCode)) {
+          errors.push({
+            row: step.rowNumber,
+            field: 'step_code',
+            message: `Duplicate step_code "${step.stepCode}" in BOM "${fishbowlBomNum}" version ${version.versionName}`,
+          });
+        }
+        seenStepCodes.add(step.stepCode);
+
+        // Validate equipment exists
+        if (step.equipmentCode && !existing.equipment.has(step.equipmentCode)) {
+          errors.push({
+            row: step.rowNumber,
+            field: 'equipment_code',
+            message: `Equipment "${step.equipmentCode}" not found. Import Worker-Equipment CSV first.`,
+          });
+        }
+
+        // Validate dependencies exist within this version
+        for (const dep of step.dependencies) {
+          if (!version.steps.some(s => s.stepCode === dep.stepCode)) {
+            warnings.push({
+              row: step.rowNumber,
+              field: 'dependencies',
+              message: `Dependency "${dep.stepCode}" not found in BOM "${fishbowlBomNum}" version ${version.versionName}`,
+            });
+          }
+        }
+
+        if (!step.componentName) {
+          warnings.push({
+            row: step.rowNumber,
+            field: 'component',
+            message: `Missing component name for step ${step.stepCode}`,
+          });
+        }
+
+        totalSteps++;
+        totalDependencies += step.dependencies.length;
+      }
+
+      // Check for circular dependencies
+      const cycles = detectCircularDependenciesFB(version.steps);
+      for (const cycle of cycles) {
+        errors.push({
+          message: `Circular dependency in BOM "${fishbowlBomNum}" version ${version.versionName}: ${cycle}`,
+        });
+      }
+
+      versionPreviews.push({
+        versionName: version.versionName,
+        versionNumber,
+        isDefault: version.isDefault,
+        stepCount: version.steps.length,
+      });
+    }
+
+    bomPreviews.push({
+      fishbowlBomNum,
+      productAction,
+      existingProductId,
+      existingProductName,
+      versions: versionPreviews,
+    });
+  }
+
+  // Check components
+  const componentsWithAction: { name: string; action: 'create' | 'exists' }[] = [];
+  for (const compName of parsed.components) {
+    const exists = existing.components.has(compName);
+    componentsWithAction.push({ name: compName, action: exists ? 'exists' : 'create' });
+  }
+
+  const workCategoriesToCreate = [...parsed.workCategories].filter(
+    cat => !existing.workCategories.has(cat)
+  );
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    preview: {
+      boms: bomPreviews,
+      components: componentsWithAction,
+      workCategories: [...parsed.workCategories],
+      summary: {
+        bomsToProcess: parsed.fishbowlBomNums.size,
+        productsToCreate,
+        productsToLink,
+        versionsToCreate: totalVersions,
+        stepsToCreate: totalSteps,
+        dependenciesToCreate: totalDependencies,
+        componentsToCreate: componentsWithAction.filter(c => c.action === 'create').length,
+        workCategoriesToCreate: workCategoriesToCreate.length,
+      },
+    },
+  };
+}
+
+// Production History with Fishbowl references validation
+export interface ProductionDataFBExistingData extends ExistingData {
+  // Fishbowl BOM num -> local product info
+  productsByBomNum: Map<string, { id: number; name: string }>;
+  // Fishbowl SO num -> local order info (if imported)
+  ordersBySoNum: Map<string, { id: number; productId: number }>;
+  // Fishbowl WO num -> local order info (if linked)
+  ordersByWoNum: Map<string, { id: number; productId: number }>;
+  // productId -> versionName -> build version info
+  productVersions: Map<number, Map<string, { id: number; versionName: string }>>;
+  // buildVersionId -> stepCode -> step info
+  versionSteps: Map<number, Map<string, { id: number; name: string; timePerPieceSeconds: number }>>;
+  existingAssignments: Set<string>;
+}
+
+export interface ProductionDataFBValidationResult {
+  valid: boolean;
+  errors: ValidationError[];
+  warnings: ValidationWarning[];
+  preview: {
+    rows: (ParsedProductionRowFB & {
+      orderId: number | null;  // null if order needs to be created
+      workerId: number;
+      productStepId: number;
+      buildVersionId: number;
+      expectedTimeSeconds: number;
+      orderAction: 'use_existing' | 'create_from_so' | 'create_manual';
+    })[];
+    summary: {
+      totalRows: number;
+      ordersToUse: number;
+      ordersToCreate: number;
+      workersInvolved: number;
+      stepsInvolved: number;
+      schedulesToCreate: number;
+      entriesToCreate: number;
+      assignmentsToCreate: number;
+    };
+  };
+}
+
+/**
+ * Validate Production History with Fishbowl references
+ * References Fishbowl BOM/SO/WO numbers for automatic linking
+ */
+export function validateProductionDataFB(
+  parsed: ParsedProductionDataFB,
+  existing: ProductionDataFBExistingData
+): ProductionDataFBValidationResult {
+  const errors: ValidationError[] = [];
+  const warnings: ValidationWarning[] = [];
+
+  const validatedRows: (ParsedProductionRowFB & {
+    orderId: number | null;
+    workerId: number;
+    productStepId: number;
+    buildVersionId: number;
+    expectedTimeSeconds: number;
+    orderAction: 'use_existing' | 'create_from_so' | 'create_manual';
+  })[] = [];
+
+  // Track unique combinations for summary
+  const uniqueOrderDates = new Set<string>();
+  const uniqueStepDates = new Set<string>();
+  const uniqueWorkers = new Set<number>();
+  const uniqueSteps = new Set<number>();
+  const ordersToUse = new Set<number>();
+  const ordersToCreate = new Set<string>();
+
+  for (const row of parsed.rows) {
+    // Find product by Fishbowl BOM num
+    const product = existing.productsByBomNum.get(row.fishbowlBomNum);
+    if (!product) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'fishbowl_bom_num',
+        message: `Product with Fishbowl BOM "${row.fishbowlBomNum}" not found. Import Product Steps with this BOM first.`,
+      });
+      continue;
+    }
+
+    // Try to find existing order by SO or WO number
+    let orderId: number | null = null;
+    let orderAction: 'use_existing' | 'create_from_so' | 'create_manual' = 'create_manual';
+
+    if (row.fishbowlWoNum) {
+      const orderByWo = existing.ordersByWoNum.get(row.fishbowlWoNum);
+      if (orderByWo) {
+        orderId = orderByWo.id;
+        orderAction = 'use_existing';
+        ordersToUse.add(orderId);
+      }
+    }
+
+    if (!orderId && row.fishbowlSoNum) {
+      const orderBySo = existing.ordersBySoNum.get(row.fishbowlSoNum);
+      if (orderBySo) {
+        orderId = orderBySo.id;
+        orderAction = 'use_existing';
+        ordersToUse.add(orderId);
+      } else {
+        // Will create order from SO
+        orderAction = 'create_from_so';
+        ordersToCreate.add(`so:${row.fishbowlSoNum}`);
+      }
+    }
+
+    if (!orderId && !row.fishbowlSoNum) {
+      // Will create manual order
+      orderAction = 'create_manual';
+      ordersToCreate.add(`manual:${row.fishbowlBomNum}:${row.workDate}`);
+    }
+
+    // Validate version_name exists for this product
+    const productVersions = existing.productVersions.get(product.id);
+    if (!productVersions) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'version_name',
+        message: `Product "${product.name}" (BOM: ${row.fishbowlBomNum}) has no build versions`,
+      });
+      continue;
+    }
+
+    const version = productVersions.get(row.versionName);
+    if (!version) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'version_name',
+        message: `Version "${row.versionName}" not found for product "${product.name}"`,
+      });
+      continue;
+    }
+
+    // Validate step_code exists for this version
+    const versionSteps = existing.versionSteps.get(version.id);
+    if (!versionSteps) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'step_code',
+        message: `No steps found for version "${row.versionName}"`,
+      });
+      continue;
+    }
+
+    const step = versionSteps.get(row.stepCode);
+    if (!step) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'step_code',
+        message: `Step code "${row.stepCode}" not found in version "${row.versionName}"`,
+      });
+      continue;
+    }
+
+    // Validate worker exists
+    const workerId = existing.workers.get(row.workerName);
+    if (!workerId) {
+      errors.push({
+        row: row.rowNumber,
+        field: 'worker_name',
+        message: `Worker "${row.workerName}" not found. Import Worker-Equipment CSV first.`,
+      });
+      continue;
+    }
+
+    // Check for duplicates
+    const dupKey = `${workerId}:${step.id}:${row.workDate}:${row.startTime}`;
+    if (existing.existingAssignments.has(dupKey)) {
+      errors.push({
+        row: row.rowNumber,
+        message: `Duplicate: Worker "${row.workerName}" already has an assignment for step "${row.stepCode}" on ${row.workDate} at ${row.startTime}`,
+      });
+      continue;
+    }
+
+    // Calculate week start for schedule grouping
+    const date = new Date(row.workDate);
+    const dayOfWeek = date.getDay();
+    const weekStart = new Date(date);
+    weekStart.setDate(date.getDate() - dayOfWeek);
+    const weekStartStr = weekStart.toISOString().split('T')[0];
+
+    const orderKey = orderId?.toString() || `pending:${row.fishbowlBomNum}:${row.fishbowlSoNum || 'manual'}`;
+    uniqueOrderDates.add(`${orderKey}:${weekStartStr}`);
+    uniqueStepDates.add(`${orderKey}:${step.id}:${row.workDate}`);
+    uniqueWorkers.add(workerId);
+    uniqueSteps.add(step.id);
+
+    const expectedTimeSeconds = step.timePerPieceSeconds * row.units;
+
+    validatedRows.push({
+      ...row,
+      orderId,
+      workerId,
+      productStepId: step.id,
+      buildVersionId: version.id,
+      expectedTimeSeconds,
+      orderAction,
+    });
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    preview: {
+      rows: validatedRows,
+      summary: {
+        totalRows: validatedRows.length,
+        ordersToUse: ordersToUse.size,
+        ordersToCreate: ordersToCreate.size,
         workersInvolved: uniqueWorkers.size,
         stepsInvolved: uniqueSteps.size,
         schedulesToCreate: uniqueOrderDates.size,

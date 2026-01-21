@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { AlertCircle, CheckCircle, RefreshCw } from "lucide-react";
 
 type ImportPhase = 'upload' | 'preview' | 'success';
 
@@ -18,12 +19,14 @@ interface PreviewResponse {
   success: boolean;
   preview: {
     summary: {
+      totalRows: number;
+      ordersToUse: number;
+      ordersToCreate: number;
+      workersInvolved: number;
+      stepsInvolved: number;
       schedulesToCreate: number;
-      scheduleEntriesCount: number;
-      taskAssignmentsCount: number;
-      uniqueWorkers: number;
-      uniqueSteps: number;
-      uniqueOrders: number;
+      entriesToCreate: number;
+      assignmentsToCreate: number;
     };
   };
   errors: ValidationError[];
@@ -34,9 +37,10 @@ interface PreviewResponse {
 interface ConfirmResponse {
   success: boolean;
   result: {
+    ordersCreated: number;
     schedulesCreated: number;
-    scheduleEntriesCreated: number;
-    taskAssignmentsCreated: number;
+    entriesCreated: number;
+    assignmentsCreated: number;
   };
   proficiencies?: {
     proficienciesCreated: number;
@@ -44,7 +48,11 @@ interface ConfirmResponse {
   };
 }
 
-const SAMPLE_CSV_PATH = "/sample-data/sample-production-history.csv";
+interface FishbowlStatus {
+  configured: boolean;
+  connected: boolean;
+  message?: string;
+}
 
 export default function ImportProductionHistory() {
   const [phase, setPhase] = useState<ImportPhase>('upload');
@@ -55,6 +63,16 @@ export default function ImportProductionHistory() {
   const [previewData, setPreviewData] = useState<PreviewResponse | null>(null);
   const [confirmResult, setConfirmResult] = useState<ConfirmResponse | null>(null);
   const [deriveProficiencies, setDeriveProficiencies] = useState(true);
+  const [fishbowlStatus, setFishbowlStatus] = useState<FishbowlStatus | null>(null);
+  const [statusLoading, setStatusLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/fishbowl/status")
+      .then((res) => res.json())
+      .then((data) => setFishbowlStatus(data))
+      .catch(() => setFishbowlStatus({ configured: false, connected: false }))
+      .finally(() => setStatusLoading(false));
+  }, []);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -75,7 +93,7 @@ export default function ImportProductionHistory() {
     setError(null);
 
     try {
-      const response = await fetch('/api/imports/production-history/preview', {
+      const response = await fetch('/api/imports/production-history-fb/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, format }),
@@ -103,7 +121,7 @@ export default function ImportProductionHistory() {
     setError(null);
 
     try {
-      const response = await fetch('/api/imports/production-history/confirm', {
+      const response = await fetch('/api/imports/production-history-fb/confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -135,15 +153,86 @@ export default function ImportProductionHistory() {
     setError(null);
   };
 
+  // Loading state
+  if (statusLoading) {
+    return (
+      <div className="page import-page">
+        <div className="page-header">
+          <h1>Import Production History</h1>
+        </div>
+        <div className="card" style={{ padding: 48, textAlign: "center" }}>
+          <p style={{ color: "#64748b" }}>Checking Fishbowl connection...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Not configured state
+  if (fishbowlStatus && !fishbowlStatus.configured) {
+    return (
+      <div className="page import-page">
+        <div className="page-header">
+          <h1>Import Production History</h1>
+        </div>
+        <div className="card" style={{ padding: 24, textAlign: "center" }}>
+          <AlertCircle size={48} style={{ color: "#ef4444", marginBottom: 16 }} />
+          <h2 style={{ marginBottom: 8 }}>Fishbowl Not Configured</h2>
+          <p style={{ color: "#64748b", marginBottom: 16 }}>
+            Fishbowl connection is required for importing production history. Set the following environment variables:
+          </p>
+          <code style={{ display: "block", background: "#f1f5f9", padding: 16, borderRadius: 8, textAlign: "left" }}>
+            FISHBOWL_HOST=your-host.myfishbowl.com<br />
+            FISHBOWL_PORT=4320<br />
+            FISHBOWL_DATABASE=your_database<br />
+            FISHBOWL_USER=your_user<br />
+            FISHBOWL_PASSWORD=your_password
+          </code>
+        </div>
+      </div>
+    );
+  }
+
+  // Not connected state
+  if (fishbowlStatus && !fishbowlStatus.connected) {
+    return (
+      <div className="page import-page">
+        <div className="page-header">
+          <h1>Import Production History</h1>
+        </div>
+        <div className="card" style={{ padding: 24, textAlign: "center" }}>
+          <AlertCircle size={48} style={{ color: "#f59e0b", marginBottom: 16 }} />
+          <h2 style={{ marginBottom: 8 }}>Connection Failed</h2>
+          <p style={{ color: "#64748b", marginBottom: 16 }}>
+            {fishbowlStatus.message || "Could not connect to Fishbowl database"}
+          </p>
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              setStatusLoading(true);
+              fetch("/api/fishbowl/status")
+                .then((res) => res.json())
+                .then(setFishbowlStatus)
+                .finally(() => setStatusLoading(false));
+            }}
+          >
+            <RefreshCw size={16} style={{ marginRight: 8 }} />
+            Retry Connection
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="page import-page">
       <div className="page-header">
         <div>
           <h1>Import Production History</h1>
-          <p className="page-subtitle">Step 4 of 4 in the import process (Optional)</p>
+          <p className="page-subtitle">Import historical production data with Fishbowl references</p>
         </div>
-        <div className="import-order-badge">
-          <span className="badge badge-secondary">Requires Orders</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <CheckCircle size={16} style={{ color: "#22c55e" }} />
+          <span style={{ color: "#22c55e", fontSize: 14 }}>Fishbowl Connected</span>
         </div>
       </div>
 
@@ -157,9 +246,10 @@ export default function ImportProductionHistory() {
             <div className="docs-section">
               <h2>Overview</h2>
               <p>
-                This CSV imports historical production data — what work was done, by whom, and when.
-                Each row represents a work session: a worker performing a specific step for a
-                specific order.
+                This CSV imports historical production data using Fishbowl references. Each row
+                represents a work session: a worker performing a specific step. The
+                <code>fishbowl_bom_num</code> identifies the product, and optional SO/WO numbers
+                link to Fishbowl orders.
               </p>
               <p>
                 This import is <strong>optional</strong>, but highly recommended. It allows the
@@ -180,18 +270,25 @@ export default function ImportProductionHistory() {
                 </thead>
                 <tbody>
                   <tr>
-                    <td><code>product_name</code></td>
+                    <td><code>fishbowl_bom_num</code></td>
                     <td>Yes</td>
                     <td>
-                      Product name. Used with <code>due_date</code> to identify the order.
+                      Fishbowl BOM number. Must match a product that's linked to this BOM.
                     </td>
                   </tr>
                   <tr>
-                    <td><code>due_date</code></td>
-                    <td>Yes</td>
+                    <td><code>fishbowl_so_num</code></td>
+                    <td>No</td>
                     <td>
-                      Order due date in <code>YYYY-MM-DD</code> format.
-                      Used with <code>product_name</code> to identify the order.
+                      Fishbowl Sales Order number. Used to link production to an order.
+                      If provided and no matching order exists, one will be created.
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><code>fishbowl_wo_num</code></td>
+                    <td>No</td>
+                    <td>
+                      Fishbowl Work Order number. Used for tracking production against WOs.
                     </td>
                   </tr>
                   <tr>
@@ -199,7 +296,7 @@ export default function ImportProductionHistory() {
                     <td>Yes</td>
                     <td>
                       Build version that was used for production (e.g., "v1.0 Standard").
-                      Must match a version from the Products import.
+                      Must match a version from the Product Steps import.
                     </td>
                   </tr>
                   <tr>
@@ -251,9 +348,9 @@ export default function ImportProductionHistory() {
             <div className="docs-section">
               <h2>Order Identification</h2>
               <p>
-                Each row references an order using the composite key of <strong>product_name</strong> and
-                <strong> due_date</strong>. Make sure these values match exactly with orders imported
-                in the previous step.
+                Orders are identified by <code>fishbowl_so_num</code> or <code>fishbowl_wo_num</code>.
+                If no matching order exists in the system, one will be created automatically and
+                linked to the Fishbowl reference.
               </p>
             </div>
 
@@ -275,21 +372,13 @@ export default function ImportProductionHistory() {
 
             <div className="docs-section">
               <h2>Example</h2>
-              <pre className="code-example">{`product_name,due_date,version_name,step_code,worker_name,work_date,start_time,end_time,units_produced
-Tactical Vest,2025-01-10,v1.0 Standard,A1A,Maria Garcia,2025-01-05,07:00,11:00,120
-Tactical Vest,2025-01-10,v1.0 Standard,A1A,Maria Garcia,2025-01-05,12:00,16:00,115
-Tactical Vest,2025-01-10,v1.0 Standard,A1B,John Smith,2025-01-06,08:00,12:00,100
-Tactical Vest,2025-01-10,v1.0 Standard,A1B,John Smith,2025-01-06,13:00,17:00,95
-Tactical Vest,2025-01-10,v1.0 Standard,SEW-01,Ana Rodriguez,2025-01-07,07:00,15:00,80
-Medical Kit Pouch,2025-02-20,v1.0,M1,Carlos Martinez,2025-02-10,09:00,12:00,50`}</pre>
-            </div>
-
-            <div className="docs-section">
-              <h2>Download Template</h2>
-              <p>Download the sample CSV to use as a template:</p>
-              <a href={SAMPLE_CSV_PATH} download className="btn btn-secondary">
-                Download sample-production-history.csv
-              </a>
+              <pre className="code-example">{`fishbowl_bom_num,fishbowl_so_num,fishbowl_wo_num,version_name,step_code,worker_name,work_date,start_time,end_time,units_produced
+0707-ROLL-BLACK,SO-1234,WO-567,v1.0 Standard,A1A,Maria Garcia,2025-01-05,07:00,11:00,120
+0707-ROLL-BLACK,SO-1234,WO-567,v1.0 Standard,A1A,Maria Garcia,2025-01-05,12:00,16:00,115
+0707-ROLL-BLACK,SO-1234,WO-567,v1.0 Standard,A1B,John Smith,2025-01-06,08:00,12:00,100
+0707-ROLL-BLACK,SO-1234,WO-567,v1.0 Standard,A1B,John Smith,2025-01-06,13:00,17:00,95
+0707-ROLL-BLACK,SO-1234,WO-567,v1.0 Standard,SEW-01,Ana Rodriguez,2025-01-07,07:00,15:00,80
+0808-POUCH-TAN,SO-1235,,v1.0,M1,Carlos Martinez,2025-02-10,09:00,12:00,50`}</pre>
             </div>
           </div>
 
@@ -390,28 +479,36 @@ Medical Kit Pouch,2025-02-20,v1.0,M1,Carlos Martinez,2025-02-10,09:00,12:00,50`}
             <table className="summary-table">
               <tbody>
                 <tr>
+                  <td>Total Rows</td>
+                  <td>{previewData.preview.summary.totalRows}</td>
+                </tr>
+                <tr>
+                  <td>Orders to Use</td>
+                  <td>{previewData.preview.summary.ordersToUse}</td>
+                </tr>
+                <tr>
+                  <td>Orders to Create</td>
+                  <td>{previewData.preview.summary.ordersToCreate}</td>
+                </tr>
+                <tr>
+                  <td>Workers Involved</td>
+                  <td>{previewData.preview.summary.workersInvolved}</td>
+                </tr>
+                <tr>
+                  <td>Steps Involved</td>
+                  <td>{previewData.preview.summary.stepsInvolved}</td>
+                </tr>
+                <tr>
                   <td>Schedules to Create</td>
                   <td>{previewData.preview.summary.schedulesToCreate}</td>
                 </tr>
                 <tr>
-                  <td>Schedule Entries</td>
-                  <td>{previewData.preview.summary.scheduleEntriesCount}</td>
+                  <td>Schedule Entries to Create</td>
+                  <td>{previewData.preview.summary.entriesToCreate}</td>
                 </tr>
                 <tr>
-                  <td>Task Assignments</td>
-                  <td>{previewData.preview.summary.taskAssignmentsCount}</td>
-                </tr>
-                <tr>
-                  <td>Unique Workers</td>
-                  <td>{previewData.preview.summary.uniqueWorkers}</td>
-                </tr>
-                <tr>
-                  <td>Unique Steps</td>
-                  <td>{previewData.preview.summary.uniqueSteps}</td>
-                </tr>
-                <tr>
-                  <td>Unique Orders Referenced</td>
-                  <td>{previewData.preview.summary.uniqueOrders}</td>
+                  <td>Task Assignments to Create</td>
+                  <td>{previewData.preview.summary.assignmentsToCreate}</td>
                 </tr>
               </tbody>
             </table>
@@ -448,14 +545,17 @@ Medical Kit Pouch,2025-02-20,v1.0,M1,Carlos Martinez,2025-02-10,09:00,12:00,50`}
           <h2>Import Successful!</h2>
 
           <div className="result-summary">
+            {confirmResult.result.ordersCreated > 0 && (
+              <p>Created {confirmResult.result.ordersCreated} orders</p>
+            )}
             {confirmResult.result.schedulesCreated > 0 && (
               <p>Created {confirmResult.result.schedulesCreated} schedules</p>
             )}
-            {confirmResult.result.scheduleEntriesCreated > 0 && (
-              <p>Created {confirmResult.result.scheduleEntriesCreated} schedule entries</p>
+            {confirmResult.result.entriesCreated > 0 && (
+              <p>Created {confirmResult.result.entriesCreated} schedule entries</p>
             )}
-            {confirmResult.result.taskAssignmentsCreated > 0 && (
-              <p>Created {confirmResult.result.taskAssignmentsCreated} task assignments</p>
+            {confirmResult.result.assignmentsCreated > 0 && (
+              <p>Created {confirmResult.result.assignmentsCreated} task assignments</p>
             )}
             {confirmResult.proficiencies && (
               <>

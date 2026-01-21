@@ -1119,3 +1119,429 @@ export function parseProductionDataV2(content: string, format: 'tsv' | 'csv' = '
     workerNames,
   };
 }
+
+// ============================================================================
+// FISHBOWL-AWARE IMPORT PARSERS
+// ============================================================================
+
+// Parsed Product Steps with Fishbowl BOM reference
+export interface ParsedProductStepFB {
+  fishbowlBomNum: string;         // Fishbowl BOM number (required)
+  versionName: string;            // e.g., "v1.0 Standard"
+  versionNumber: number;          // e.g., 1
+  isDefault: boolean;
+  stepCode: string;
+  category: string;
+  componentName: string;
+  taskName: string;
+  timePerPieceSeconds: number;
+  equipmentCode: string;
+  dependencies: ParsedDependency[];
+  rowNumber: number;
+}
+
+export interface ParsedProductStepsFB {
+  // Grouped by BOM num -> version number
+  bomVersions: Map<string, Map<number, {
+    versionName: string;
+    versionNumber: number;
+    isDefault: boolean;
+    steps: ParsedProductStepFB[];
+  }>>;
+  fishbowlBomNums: Set<string>;
+  components: Set<string>;
+  workCategories: Set<string>;
+  equipmentCodes: Set<string>;
+}
+
+/**
+ * Parse Product Steps CSV with Fishbowl BOM reference
+ *
+ * Expected format:
+ * fishbowl_bom_num,version_name,version_number,is_default,step_code,category,component,task_name,time_seconds,equipment_code,dependencies
+ * 0707-ROLL-BLACK,v1.0 Standard,1,Y,A1A,SEWING,Small Velcro Pocket,Hem short edges,20,STS,
+ * 0707-ROLL-BLACK,v1.0 Standard,1,Y,A1B,SEWING,Small Velcro Pocket,Sew hook Velcro,25,STS,A1A
+ */
+export function parseProductStepsFB(content: string, format: 'tsv' | 'csv' = 'csv'): ParsedProductStepsFB {
+  const rows = parseDelimited(content, format);
+
+  if (rows.length < 2) {
+    throw new Error('Product steps CSV must have at least a header row and one data row');
+  }
+
+  const headerRow = rows[0]!.map(h => h.toLowerCase().replace(/[_\s-]/g, ''));
+
+  const findColumn = (keywords: string[]): number => {
+    return headerRow.findIndex(h =>
+      keywords.some(k => h.includes(k))
+    );
+  };
+
+  const bomNumIdx = findColumn(['fishbowlbomnum', 'bomnum', 'bom']);
+  const versionNameIdx = findColumn(['versionname']);
+  const versionNumberIdx = findColumn(['versionnumber']);
+  const isDefaultIdx = findColumn(['isdefault', 'default']);
+  const stepCodeIdx = findColumn(['stepcode']);
+  const categoryIdx = findColumn(['category']);
+  const componentIdx = findColumn(['component']);
+  const taskNameIdx = findColumn(['taskname', 'task']);
+  const timeIdx = findColumn(['timeseconds', 'time']);
+  const equipmentCodeIdx = findColumn(['equipmentcode', 'equipment']);
+  const dependenciesIdx = findColumn(['dependencies', 'dependency']);
+
+  // Validate required columns
+  const missing: string[] = [];
+  if (bomNumIdx === -1) missing.push('fishbowl_bom_num');
+  if (versionNameIdx === -1) missing.push('version_name');
+  if (versionNumberIdx === -1) missing.push('version_number');
+  if (stepCodeIdx === -1) missing.push('step_code');
+  if (categoryIdx === -1) missing.push('category');
+  if (taskNameIdx === -1) missing.push('task_name');
+  if (timeIdx === -1) missing.push('time_seconds');
+
+  if (missing.length > 0) {
+    throw new Error(`Missing required columns: ${missing.join(', ')}`);
+  }
+
+  const bomVersions = new Map<string, Map<number, {
+    versionName: string;
+    versionNumber: number;
+    isDefault: boolean;
+    steps: ParsedProductStepFB[];
+  }>>();
+  const fishbowlBomNums = new Set<string>();
+  const components = new Set<string>();
+  const workCategories = new Set<string>();
+  const equipmentCodes = new Set<string>();
+
+  // Process data rows
+  for (let rowIdx = 1; rowIdx < rows.length; rowIdx++) {
+    const row = rows[rowIdx];
+    if (!row) continue;
+
+    const hasContent = row.some(cell => cell && cell.trim());
+    if (!hasContent) continue;
+
+    const rowNumber = rowIdx + 1;
+
+    // Parse fishbowl_bom_num
+    const fishbowlBomNum = row[bomNumIdx]?.trim();
+    if (!fishbowlBomNum) {
+      throw new Error(`Row ${rowNumber}: Missing fishbowl_bom_num`);
+    }
+    fishbowlBomNums.add(fishbowlBomNum);
+
+    // Parse version info
+    const versionName = row[versionNameIdx]?.trim();
+    if (!versionName) {
+      throw new Error(`Row ${rowNumber}: Missing version_name`);
+    }
+
+    const versionNumberStr = row[versionNumberIdx]?.trim();
+    if (!versionNumberStr) {
+      throw new Error(`Row ${rowNumber}: Missing version_number`);
+    }
+    const versionNumber = parseInt(versionNumberStr, 10);
+    if (isNaN(versionNumber) || versionNumber <= 0) {
+      throw new Error(`Row ${rowNumber}: Invalid version_number "${versionNumberStr}" - must be a positive integer`);
+    }
+
+    const isDefaultStr = isDefaultIdx >= 0 ? row[isDefaultIdx]?.trim().toUpperCase() : '';
+    const isDefault = isDefaultStr === 'Y' || isDefaultStr === 'YES' || isDefaultStr === '1' || isDefaultStr === 'TRUE';
+
+    // Parse step_code
+    const stepCode = row[stepCodeIdx]?.trim();
+    if (!stepCode) {
+      throw new Error(`Row ${rowNumber}: Missing step_code`);
+    }
+
+    // Parse category
+    const category = row[categoryIdx]?.trim().toUpperCase() || 'OTHER';
+    workCategories.add(category);
+
+    // Parse component (optional)
+    const componentName = componentIdx >= 0 ? row[componentIdx]?.trim() || '' : '';
+    if (componentName) {
+      components.add(componentName);
+    }
+
+    // Parse task name
+    const taskName = row[taskNameIdx]?.trim();
+    if (!taskName) {
+      throw new Error(`Row ${rowNumber}: Missing task_name`);
+    }
+
+    // Parse time
+    const timeStr = row[timeIdx]?.trim();
+    if (!timeStr) {
+      throw new Error(`Row ${rowNumber}: Missing time_seconds`);
+    }
+    const timePerPieceSeconds = parseInt(timeStr, 10);
+    if (isNaN(timePerPieceSeconds) || timePerPieceSeconds <= 0) {
+      throw new Error(`Row ${rowNumber}: Invalid time_seconds "${timeStr}" - must be a positive integer`);
+    }
+
+    // Parse equipment code (optional)
+    const equipmentCode = equipmentCodeIdx >= 0 ? row[equipmentCodeIdx]?.trim() || '' : '';
+    if (equipmentCode) {
+      equipmentCodes.add(equipmentCode);
+    }
+
+    // Parse dependencies
+    const dependencies: ParsedDependency[] = [];
+    if (dependenciesIdx >= 0) {
+      const depStr = row[dependenciesIdx]?.trim();
+      if (depStr) {
+        const depParts = depStr.split(',').map(d => d.trim()).filter(d => d);
+        for (const dep of depParts) {
+          const [depStepCode, typeStr] = dep.split(':').map(s => s.trim());
+          if (depStepCode) {
+            const type = typeStr?.toLowerCase() === 'start' ? 'start' : 'finish';
+            dependencies.push({ stepCode: depStepCode, type });
+          }
+        }
+      }
+    }
+
+    // Get or create BOM version structure
+    if (!bomVersions.has(fishbowlBomNum)) {
+      bomVersions.set(fishbowlBomNum, new Map());
+    }
+    const versions = bomVersions.get(fishbowlBomNum)!;
+
+    if (!versions.has(versionNumber)) {
+      versions.set(versionNumber, {
+        versionName,
+        versionNumber,
+        isDefault,
+        steps: [],
+      });
+    }
+
+    const version = versions.get(versionNumber)!;
+    if (isDefault) {
+      version.isDefault = true;
+    }
+
+    version.steps.push({
+      fishbowlBomNum,
+      versionName,
+      versionNumber,
+      isDefault,
+      stepCode,
+      category,
+      componentName,
+      taskName,
+      timePerPieceSeconds,
+      equipmentCode,
+      dependencies,
+      rowNumber,
+    });
+  }
+
+  if (bomVersions.size === 0) {
+    throw new Error('No valid product steps data found');
+  }
+
+  return {
+    bomVersions,
+    fishbowlBomNums,
+    components,
+    workCategories,
+    equipmentCodes,
+  };
+}
+
+// Parsed Production History with Fishbowl references
+export interface ParsedProductionRowFB {
+  fishbowlBomNum: string;         // Fishbowl BOM number (identifies product)
+  fishbowlSoNum: string | null;   // Fishbowl SO number (optional, for linking)
+  fishbowlWoNum: string | null;   // Fishbowl WO number (optional, for linking)
+  versionName: string;
+  stepCode: string;
+  workerName: string;
+  workDate: string;               // YYYY-MM-DD
+  startTime: string;              // HH:MM:SS
+  endTime: string;                // HH:MM:SS
+  units: number;
+  rowNumber: number;
+}
+
+export interface ParsedProductionDataFB {
+  rows: ParsedProductionRowFB[];
+  fishbowlBomNums: Set<string>;
+  fishbowlSoNums: Set<string>;
+  fishbowlWoNums: Set<string>;
+  stepCodes: Set<string>;
+  workerNames: Set<string>;
+}
+
+/**
+ * Parse Production History CSV with Fishbowl references
+ *
+ * Expected format:
+ * fishbowl_bom_num,fishbowl_so_num,fishbowl_wo_num,version_name,step_code,worker_name,work_date,start_time,end_time,units_produced
+ * 0707-ROLL-BLACK,SO-1234,WO-567,v1.0 Standard,A1A,Maria Garcia,2025-01-05,07:00,11:00,120
+ */
+export function parseProductionDataFB(content: string, format: 'tsv' | 'csv' = 'csv'): ParsedProductionDataFB {
+  const rows = parseDelimited(content, format);
+
+  if (rows.length < 2) {
+    throw new Error('Production history CSV must have at least a header row and one data row');
+  }
+
+  const headerRow = rows[0]!.map(h => h.toLowerCase().replace(/[_\s-]/g, ''));
+
+  const findColumn = (keywords: string[]): number => {
+    return headerRow.findIndex(h =>
+      keywords.some(k => h.includes(k))
+    );
+  };
+
+  const bomNumIdx = findColumn(['fishbowlbomnum', 'bomnum', 'bom']);
+  const soNumIdx = findColumn(['fishbowlsonum', 'sonum', 'salesorder']);
+  const woNumIdx = findColumn(['fishbowlwonum', 'wonum', 'workorder']);
+  const versionNameIdx = findColumn(['versionname', 'version']);
+  const stepCodeIdx = findColumn(['stepcode']);
+  const workerNameIdx = findColumn(['workername', 'worker']);
+  const workDateIdx = findColumn(['workdate']);
+  const startTimeIdx = findColumn(['starttime', 'start']);
+  const endTimeIdx = findColumn(['endtime', 'end']);
+  const unitsIdx = findColumn(['unitsproduced', 'units', 'output']);
+
+  // Validate required columns
+  const missing: string[] = [];
+  if (bomNumIdx === -1) missing.push('fishbowl_bom_num');
+  if (versionNameIdx === -1) missing.push('version_name');
+  if (stepCodeIdx === -1) missing.push('step_code');
+  if (workerNameIdx === -1) missing.push('worker_name');
+  if (workDateIdx === -1) missing.push('work_date');
+  if (startTimeIdx === -1) missing.push('start_time');
+  if (endTimeIdx === -1) missing.push('end_time');
+  if (unitsIdx === -1) missing.push('units_produced');
+
+  if (missing.length > 0) {
+    throw new Error(`Missing required columns: ${missing.join(', ')}`);
+  }
+
+  const parsedRows: ParsedProductionRowFB[] = [];
+  const fishbowlBomNums = new Set<string>();
+  const fishbowlSoNums = new Set<string>();
+  const fishbowlWoNums = new Set<string>();
+  const stepCodes = new Set<string>();
+  const workerNames = new Set<string>();
+
+  // Process data rows
+  for (let rowIdx = 1; rowIdx < rows.length; rowIdx++) {
+    const row = rows[rowIdx];
+    if (!row) continue;
+
+    const hasContent = row.some(cell => cell && cell.trim());
+    if (!hasContent) continue;
+
+    const rowNumber = rowIdx + 1;
+
+    // Parse fishbowl_bom_num (required)
+    const fishbowlBomNum = row[bomNumIdx]?.trim();
+    if (!fishbowlBomNum) {
+      throw new Error(`Row ${rowNumber}: Missing fishbowl_bom_num`);
+    }
+    fishbowlBomNums.add(fishbowlBomNum);
+
+    // Parse fishbowl_so_num (optional)
+    const fishbowlSoNum = soNumIdx >= 0 ? row[soNumIdx]?.trim() || null : null;
+    if (fishbowlSoNum) {
+      fishbowlSoNums.add(fishbowlSoNum);
+    }
+
+    // Parse fishbowl_wo_num (optional)
+    const fishbowlWoNum = woNumIdx >= 0 ? row[woNumIdx]?.trim() || null : null;
+    if (fishbowlWoNum) {
+      fishbowlWoNums.add(fishbowlWoNum);
+    }
+
+    // Parse version_name
+    const versionName = row[versionNameIdx]?.trim();
+    if (!versionName) {
+      throw new Error(`Row ${rowNumber}: Missing version_name`);
+    }
+
+    // Parse step_code
+    const stepCode = row[stepCodeIdx]?.trim();
+    if (!stepCode) {
+      throw new Error(`Row ${rowNumber}: Missing step_code`);
+    }
+    stepCodes.add(stepCode);
+
+    // Parse worker_name
+    const workerName = row[workerNameIdx]?.trim();
+    if (!workerName) {
+      throw new Error(`Row ${rowNumber}: Missing worker_name`);
+    }
+    workerNames.add(workerName);
+
+    // Parse work_date
+    const workDate = row[workDateIdx]?.trim();
+    if (!workDate) {
+      throw new Error(`Row ${rowNumber}: Missing work_date`);
+    }
+    if (!isValidDate(workDate)) {
+      throw new Error(`Row ${rowNumber}: Invalid work_date format "${workDate}" - expected YYYY-MM-DD`);
+    }
+
+    // Parse start_time
+    const startTime = row[startTimeIdx]?.trim();
+    if (!startTime) {
+      throw new Error(`Row ${rowNumber}: Missing start_time`);
+    }
+    if (!isValidTime(startTime)) {
+      throw new Error(`Row ${rowNumber}: Invalid start_time format "${startTime}" - expected HH:MM or HH:MM:SS`);
+    }
+
+    // Parse end_time
+    const endTime = row[endTimeIdx]?.trim();
+    if (!endTime) {
+      throw new Error(`Row ${rowNumber}: Missing end_time`);
+    }
+    if (!isValidTime(endTime)) {
+      throw new Error(`Row ${rowNumber}: Invalid end_time format "${endTime}" - expected HH:MM or HH:MM:SS`);
+    }
+
+    // Parse units
+    const unitsStr = row[unitsIdx]?.trim();
+    if (!unitsStr) {
+      throw new Error(`Row ${rowNumber}: Missing units_produced`);
+    }
+    const units = parseInt(unitsStr, 10);
+    if (isNaN(units) || units < 0) {
+      throw new Error(`Row ${rowNumber}: Invalid units_produced "${unitsStr}" - must be a non-negative number`);
+    }
+
+    parsedRows.push({
+      fishbowlBomNum,
+      fishbowlSoNum,
+      fishbowlWoNum,
+      versionName,
+      stepCode,
+      workerName,
+      workDate,
+      startTime: normalizeTime(startTime),
+      endTime: normalizeTime(endTime),
+      units,
+      rowNumber,
+    });
+  }
+
+  if (parsedRows.length === 0) {
+    throw new Error('No valid production history data found');
+  }
+
+  return {
+    rows: parsedRows,
+    fishbowlBomNums,
+    fishbowlSoNums,
+    fishbowlWoNums,
+    stepCodes,
+    workerNames,
+  };
+}

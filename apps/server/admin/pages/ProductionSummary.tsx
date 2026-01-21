@@ -245,15 +245,28 @@ export default function ProductionSummary() {
   useEffect(() => {
     const fetchFilterOptions = async () => {
       try {
-        const [productsRes, workersRes, ordersRes] = await Promise.all([
-          fetch("/api/products"),
+        const [workersRes, demandRes] = await Promise.all([
           fetch("/api/workers"),
-          fetch("/api/orders"),
+          fetch("/api/demand"),
         ]);
 
-        if (productsRes.ok) {
-          const products = await productsRes.json();
-          setProductOptions(products.map((p: { id: number; name: string }) => ({ id: p.id, name: p.name })));
+        // Get unique BOM nums from production history for product filter
+        const productionRes = await fetch("/api/production-history?limit=1000");
+        if (productionRes.ok) {
+          const data = await productionRes.json();
+          const bomNums = new Set<string>();
+          const bomsById = new Map<string, { id: number; name: string }>();
+          for (const entry of data.entries || []) {
+            if (entry.fishbowlBomNum && !bomNums.has(entry.fishbowlBomNum)) {
+              bomNums.add(entry.fishbowlBomNum);
+              // Use the BOM num as both id and name for filtering
+              bomsById.set(entry.fishbowlBomNum, {
+                id: bomNums.size, // Use index as pseudo-id
+                name: entry.fishbowlBomNum,
+              });
+            }
+          }
+          setProductOptions(Array.from(bomsById.values()));
         }
 
         if (workersRes.ok) {
@@ -261,12 +274,12 @@ export default function ProductionSummary() {
           setWorkerOptions(workers.map((w: { id: number; name: string }) => ({ id: w.id, name: w.name })));
         }
 
-        if (ordersRes.ok) {
-          const orders = await ordersRes.json();
-          setOrderOptions(orders.map((o: { id: number; product_name?: string; productName?: string }) => ({
-            id: o.id,
-            name: `Order #${o.id}`,
-            productName: o.product_name || o.productName || "",
+        if (demandRes.ok) {
+          const demands = await demandRes.json();
+          setOrderOptions((demands.entries || []).map((d: { id: number; fishbowl_bom_num?: string; fishbowlBomNum?: string; customer_name?: string }) => ({
+            id: d.id,
+            name: `#${d.id}`,
+            productName: d.fishbowl_bom_num || d.fishbowlBomNum || "",
           })));
         }
       } catch (error) {

@@ -1,3 +1,7 @@
+/**
+ * Production Summary API - Analytics & Reporting
+ * Uses NEW schema: production_history, demand_entries, bom_steps, worker_step_performance
+ */
 import { db } from "../db";
 
 interface DailyBreakdown {
@@ -9,36 +13,38 @@ interface DailyBreakdown {
   laborCost: number;
   equipmentCost: number;
   cost: number;
-  plannedUnits: number;
   efficiency: number;
 }
 
-interface ProductSummary {
-  productId: number;
-  productName: string;
+interface WorkerSummary {
+  workerId: number;
+  workerName: string;
+  totalUnits: number;
+  tasksCompleted: number;
+  totalHours: number;
+  laborCost: number;
+  avgEfficiency: number;
+}
+
+interface BOMSummary {
+  fishbowlBomId: number;
+  fishbowlBomNum: string;
   totalUnits: number;
   tasksCompleted: number;
   totalHours: number;
   laborCost: number;
   equipmentCost: number;
   totalCost: number;
-  plannedUnits: number;
   efficiency: number;
 }
 
-interface OrderSummary {
-  orderId: number;
-  productName: string;
-  orderQuantity: number;
-  unitsComplete: number;
-  unitsInProgress: number;
-  unitsNotStarted: number;
-  // Progress vs Ideal (based on time_per_piece_seconds from product definitions)
-  progressPercentIdeal: number;
-  estimatedHoursRemainingIdeal: number;
-  // Progress vs Actual Efficiency (based on observed pace)
-  progressPercentActual: number;
-  estimatedHoursRemainingActual: number;
+interface DemandSummary {
+  demandId: number;
+  fishbowlBomNum: string;
+  customerName: string | null;
+  demandQuantity: number;
+  quantityCompleted: number;
+  progressPercent: number;
   tasksCompleted: number;
   totalHours: number;
   laborCost: number;
@@ -47,10 +53,9 @@ interface OrderSummary {
 }
 
 interface StepSummary {
-  stepId: number;
+  bomStepId: number;
   stepName: string;
-  productName: string;
-  sequence: number;
+  fishbowlBomNum: string;
   totalUnits: number;
   tasksCompleted: number;
   workerCount: number;
@@ -62,14 +67,13 @@ interface StepSummary {
   estimatedSecondsPerPiece: number;
   actualSecondsPerPiece: number | null;
   topPerformers: { workerId: number; workerName: string; output: number; efficiency: number }[];
-  proficientWorkers: { workerId: number; workerName: string; level: number }[];
 }
 
 interface Filters {
   startDate: string | null;
   endDate: string | null;
-  productIds: number[];
-  orderIds: number[];
+  bomIds: number[];
+  demandIds: number[];
   workerIds: number[];
   stepIds: number[];
 }
@@ -79,13 +83,11 @@ function parseFilters(url: URL): Filters {
   let startDate = url.searchParams.get("start_date");
   let endDate = url.searchParams.get("end_date");
 
-  // If single date provided, use it for both start and end
   if (date && !startDate && !endDate) {
     startDate = date;
     endDate = date;
   }
 
-  // Parse array filters (comma-separated)
   const parseIds = (param: string | null): number[] => {
     if (!param) return [];
     return param.split(",").map(Number).filter(n => !isNaN(n));
@@ -94,45 +96,39 @@ function parseFilters(url: URL): Filters {
   return {
     startDate: startDate || null,
     endDate: endDate || null,
-    productIds: parseIds(url.searchParams.get("product_ids")),
-    orderIds: parseIds(url.searchParams.get("order_ids")),
+    bomIds: parseIds(url.searchParams.get("bom_ids")),
+    demandIds: parseIds(url.searchParams.get("demand_ids")),
     workerIds: parseIds(url.searchParams.get("worker_ids")),
     stepIds: parseIds(url.searchParams.get("step_ids")),
   };
 }
 
-function buildFilterClause(filters: Filters, tableAliases: { se?: string; twa?: string; ps?: string; o?: string; p?: string } = {}): { clause: string; args: (string | number | null)[] } {
+function buildFilterClause(filters: Filters): { clause: string; args: (string | number)[] } {
   const conditions: string[] = [];
-  const args: (string | number | null)[] = [];
-
-  const se = tableAliases.se || "se";
-  const twa = tableAliases.twa || "twa";
-  const ps = tableAliases.ps || "ps";
-  const o = tableAliases.o || "o";
-  const p = tableAliases.p || "p";
+  const args: (string | number)[] = [];
 
   if (filters.startDate && filters.endDate) {
-    conditions.push(`${se}.date BETWEEN ? AND ?`);
+    conditions.push("ph.date BETWEEN ? AND ?");
     args.push(filters.startDate, filters.endDate);
   }
 
-  if (filters.productIds.length > 0) {
-    conditions.push(`${p}.id IN (${filters.productIds.map(() => "?").join(",")})`);
-    args.push(...filters.productIds);
+  if (filters.bomIds.length > 0) {
+    conditions.push(`ph.fishbowl_bom_id IN (${filters.bomIds.map(() => "?").join(",")})`);
+    args.push(...filters.bomIds);
   }
 
-  if (filters.orderIds.length > 0) {
-    conditions.push(`${o}.id IN (${filters.orderIds.map(() => "?").join(",")})`);
-    args.push(...filters.orderIds);
+  if (filters.demandIds.length > 0) {
+    conditions.push(`ph.demand_entry_id IN (${filters.demandIds.map(() => "?").join(",")})`);
+    args.push(...filters.demandIds);
   }
 
   if (filters.workerIds.length > 0) {
-    conditions.push(`${twa}.worker_id IN (${filters.workerIds.map(() => "?").join(",")})`);
+    conditions.push(`ph.worker_id IN (${filters.workerIds.map(() => "?").join(",")})`);
     args.push(...filters.workerIds);
   }
 
   if (filters.stepIds.length > 0) {
-    conditions.push(`${ps}.id IN (${filters.stepIds.map(() => "?").join(",")})`);
+    conditions.push(`ph.bom_step_id IN (${filters.stepIds.map(() => "?").join(",")})`);
     args.push(...filters.stepIds);
   }
 
@@ -144,6 +140,11 @@ function buildFilterClause(filters: Filters, tableAliases: { se?: string; twa?: 
 
 export async function handleProductionSummary(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
+
+  // GET /api/production-history - raw production data for validation
+  if (url.pathname === "/api/production-history" && request.method === "GET") {
+    return getProductionHistory(url);
+  }
 
   // GET /api/production-summary
   if (url.pathname === "/api/production-summary" && request.method === "GET") {
@@ -157,10 +158,12 @@ export async function handleProductionSummary(request: Request): Promise<Respons
         return getDaySummary(filters);
       case "worker":
         return getWorkerSummary(filters);
-      case "product":
-        return getProductSummary(filters);
-      case "order":
-        return getOrderSummary(filters);
+      case "bom":
+      case "product": // alias for backward compatibility
+        return getBOMSummary(filters);
+      case "demand":
+      case "order": // alias for backward compatibility
+        return getDemandSummary(filters);
       case "step":
         return getStepSummary(filters);
       default:
@@ -172,53 +175,23 @@ export async function handleProductionSummary(request: Request): Promise<Respons
 }
 
 async function getOverallSummary(filters: Filters): Promise<Response> {
-  // Build filter clause - need to join through schedules and orders to filter by product/order
-  const needsOrderJoin = filters.productIds.length > 0 || filters.orderIds.length > 0;
   const { clause: filterClause, args: filterArgs } = buildFilterClause(filters);
 
-  // Get daily breakdown with workers aggregated
+  // Get daily breakdown
   const dailyResult = await db.execute({
     sql: `
       SELECT
-        se.date,
-        COALESCE(SUM(twa.actual_output), 0) as units_produced,
-        COUNT(DISTINCT CASE WHEN twa.status = 'completed' THEN twa.id END) as tasks_completed,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END
-          ELSE 0 END
-        ), 0) as hours_worked,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN ((julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END) * w.cost_per_hour
-          ELSE 0 END
-        ), 0) as labor_cost,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL AND ps.equipment_id IS NOT NULL
-          THEN ((julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END) * e.hourly_cost
-          ELSE 0 END
-        ), 0) as equipment_cost,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_output > 0
-          THEN ps.time_per_piece_seconds * twa.actual_output / 3600.0
-          ELSE 0 END
-        ), 0) as expected_hours
-      FROM schedule_entries se
-      LEFT JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-      LEFT JOIN workers w ON twa.worker_id = w.id
-      LEFT JOIN product_steps ps ON se.product_step_id = ps.id
-      LEFT JOIN equipment e ON ps.equipment_id = e.id
-      ${needsOrderJoin ? `
-      JOIN schedules s ON se.schedule_id = s.id
-      JOIN orders o ON s.order_id = o.id
-      JOIN products p ON o.product_id = p.id
-      ` : ""}
+        ph.date,
+        COALESCE(SUM(ph.units_produced), 0) as units_produced,
+        COUNT(*) as tasks_completed,
+        COALESCE(SUM(ph.actual_seconds / 3600.0), 0) as hours_worked,
+        COALESCE(SUM(ph.labor_cost), 0) as labor_cost,
+        COALESCE(SUM(ph.equipment_cost), 0) as equipment_cost,
+        COALESCE(SUM(ph.expected_seconds / 3600.0), 0) as expected_hours
+      FROM production_history ph
       WHERE ${filterClause}
-      GROUP BY se.date
-      ORDER BY se.date DESC
+      GROUP BY ph.date
+      ORDER BY ph.date DESC
     `,
     args: filterArgs
   });
@@ -227,19 +200,11 @@ async function getOverallSummary(filters: Filters): Promise<Response> {
   const workersResult = await db.execute({
     sql: `
       SELECT DISTINCT
-        se.date,
-        w.name as worker_name
-      FROM schedule_entries se
-      JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-      JOIN workers w ON twa.worker_id = w.id
-      LEFT JOIN product_steps ps ON se.product_step_id = ps.id
-      ${needsOrderJoin ? `
-      JOIN schedules s ON se.schedule_id = s.id
-      JOIN orders o ON s.order_id = o.id
-      JOIN products p ON o.product_id = p.id
-      ` : ""}
-      WHERE twa.status IN ('in_progress', 'completed') AND ${filterClause}
-      ORDER BY se.date DESC, w.name
+        ph.date,
+        ph.worker_name
+      FROM production_history ph
+      WHERE ${filterClause}
+      ORDER BY ph.date DESC, ph.worker_name
     `,
     args: filterArgs
   });
@@ -272,10 +237,8 @@ async function getOverallSummary(filters: Filters): Promise<Response> {
     laborCost: Math.round(row.labor_cost * 100) / 100,
     equipmentCost: Math.round(row.equipment_cost * 100) / 100,
     cost: Math.round((row.labor_cost + row.equipment_cost) * 100) / 100,
-    plannedUnits: 0, // Deprecated - keeping for interface compatibility
-    // Efficiency = expected_time / actual_time * 100 (higher = faster than expected)
     efficiency: row.hours_worked > 0 ? Math.round((row.expected_hours / row.hours_worked) * 100) : 0,
-    expectedHours: row.expected_hours // Keep for totals calculation
+    expectedHours: row.expected_hours
   }));
 
   // Calculate totals
@@ -297,10 +260,8 @@ async function getOverallSummary(filters: Filters): Promise<Response> {
     totalCost: 0
   });
 
-  // Strip expectedHours from response (internal use only)
+  // Strip expectedHours from response
   const dailyBreakdown: DailyBreakdown[] = dailyBreakdownWithExpected.map(({ expectedHours, ...day }) => day);
-
-  // Get unique workers for period
   const allWorkers = [...new Set(dailyBreakdown.flatMap(d => d.workers))];
 
   return Response.json({
@@ -320,52 +281,23 @@ async function getOverallSummary(filters: Filters): Promise<Response> {
 }
 
 async function getDaySummary(filters: Filters): Promise<Response> {
-  const needsOrderJoin = filters.productIds.length > 0 || filters.orderIds.length > 0;
   const { clause: filterClause, args: filterArgs } = buildFilterClause(filters);
 
   const result = await db.execute({
     sql: `
       SELECT
-        se.date,
-        COALESCE(SUM(twa.actual_output), 0) as units_produced,
-        COUNT(DISTINCT CASE WHEN twa.status = 'completed' THEN twa.id END) as tasks_completed,
-        COUNT(DISTINCT twa.worker_id) as worker_count,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END
-          ELSE 0 END
-        ), 0) as hours_worked,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN ((julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END) * w.cost_per_hour
-          ELSE 0 END
-        ), 0) as labor_cost,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL AND ps.equipment_id IS NOT NULL
-          THEN ((julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END) * e.hourly_cost
-          ELSE 0 END
-        ), 0) as equipment_cost,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_output > 0
-          THEN ps.time_per_piece_seconds * twa.actual_output / 3600.0
-          ELSE 0 END
-        ), 0) as expected_hours
-      FROM schedule_entries se
-      LEFT JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-      LEFT JOIN workers w ON twa.worker_id = w.id
-      LEFT JOIN product_steps ps ON se.product_step_id = ps.id
-      LEFT JOIN equipment e ON ps.equipment_id = e.id
-      ${needsOrderJoin ? `
-      JOIN schedules s ON se.schedule_id = s.id
-      JOIN orders o ON s.order_id = o.id
-      JOIN products p ON o.product_id = p.id
-      ` : ""}
+        ph.date,
+        COALESCE(SUM(ph.units_produced), 0) as units_produced,
+        COUNT(*) as tasks_completed,
+        COUNT(DISTINCT ph.worker_id) as worker_count,
+        COALESCE(SUM(ph.actual_seconds / 3600.0), 0) as hours_worked,
+        COALESCE(SUM(ph.labor_cost), 0) as labor_cost,
+        COALESCE(SUM(ph.equipment_cost), 0) as equipment_cost,
+        COALESCE(SUM(ph.expected_seconds / 3600.0), 0) as expected_hours
+      FROM production_history ph
       WHERE ${filterClause}
-      GROUP BY se.date
-      ORDER BY se.date DESC
+      GROUP BY ph.date
+      ORDER BY ph.date DESC
     `,
     args: filterArgs
   });
@@ -388,7 +320,6 @@ async function getDaySummary(filters: Filters): Promise<Response> {
     laborCost: Math.round(row.labor_cost * 100) / 100,
     equipmentCost: Math.round(row.equipment_cost * 100) / 100,
     totalCost: Math.round((row.labor_cost + row.equipment_cost) * 100) / 100,
-    plannedUnits: 0,
     efficiency: row.hours_worked > 0 ? Math.round((row.expected_hours / row.hours_worked) * 100) : 0
   }));
 
@@ -399,50 +330,27 @@ async function getDaySummary(filters: Filters): Promise<Response> {
 }
 
 async function getWorkerSummary(filters: Filters): Promise<Response> {
-  const needsOrderJoin = filters.productIds.length > 0 || filters.orderIds.length > 0;
   const { clause: filterClause, args: filterArgs } = buildFilterClause(filters);
 
   const result = await db.execute({
     sql: `
       SELECT
-        w.id as worker_id,
-        w.name as worker_name,
-        COALESCE(SUM(twa.actual_output), 0) as total_units,
-        COUNT(DISTINCT CASE WHEN twa.status = 'completed' THEN twa.id END) as tasks_completed,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END
-          ELSE 0 END
-        ), 0) as total_hours,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN ((julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END) * w.cost_per_hour
-          ELSE 0 END
-        ), 0) as labor_cost,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_output > 0
-          THEN ps.time_per_piece_seconds * twa.actual_output / 3600.0
-          ELSE 0 END
-        ), 0) as expected_hours
-      FROM schedule_entries se
-      JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-      JOIN workers w ON twa.worker_id = w.id
-      LEFT JOIN product_steps ps ON se.product_step_id = ps.id
-      ${needsOrderJoin ? `
-      JOIN schedules s ON se.schedule_id = s.id
-      JOIN orders o ON s.order_id = o.id
-      JOIN products p ON o.product_id = p.id
-      ` : ""}
+        ph.worker_id,
+        ph.worker_name,
+        COALESCE(SUM(ph.units_produced), 0) as total_units,
+        COUNT(*) as tasks_completed,
+        COALESCE(SUM(ph.actual_seconds / 3600.0), 0) as total_hours,
+        COALESCE(SUM(ph.labor_cost), 0) as labor_cost,
+        COALESCE(SUM(ph.expected_seconds / 3600.0), 0) as expected_hours
+      FROM production_history ph
       WHERE ${filterClause}
-      GROUP BY w.id, w.name
+      GROUP BY ph.worker_id, ph.worker_name
       ORDER BY total_units DESC
     `,
     args: filterArgs
   });
 
-  const workers = (result.rows as unknown as {
+  const workers: WorkerSummary[] = (result.rows as unknown as {
     worker_id: number;
     worker_name: string;
     total_units: number;
@@ -466,57 +374,31 @@ async function getWorkerSummary(filters: Filters): Promise<Response> {
   });
 }
 
-async function getProductSummary(filters: Filters): Promise<Response> {
+async function getBOMSummary(filters: Filters): Promise<Response> {
   const { clause: filterClause, args: filterArgs } = buildFilterClause(filters);
 
   const result = await db.execute({
     sql: `
       SELECT
-        p.id as product_id,
-        p.name as product_name,
-        COALESCE(SUM(twa.actual_output), 0) as total_units,
-        COUNT(DISTINCT CASE WHEN twa.status = 'completed' THEN twa.id END) as tasks_completed,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END
-          ELSE 0 END
-        ), 0) as total_hours,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN ((julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END) * w.cost_per_hour
-          ELSE 0 END
-        ), 0) as labor_cost,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL AND ps.equipment_id IS NOT NULL
-          THEN ((julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END) * e.hourly_cost
-          ELSE 0 END
-        ), 0) as equipment_cost,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_output > 0
-          THEN ps.time_per_piece_seconds * twa.actual_output / 3600.0
-          ELSE 0 END
-        ), 0) as expected_hours
-      FROM schedule_entries se
-      JOIN schedules s ON se.schedule_id = s.id
-      JOIN orders o ON s.order_id = o.id
-      JOIN products p ON o.product_id = p.id
-      LEFT JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-      LEFT JOIN workers w ON twa.worker_id = w.id
-      LEFT JOIN product_steps ps ON se.product_step_id = ps.id
-      LEFT JOIN equipment e ON ps.equipment_id = e.id
+        ph.fishbowl_bom_id,
+        ph.fishbowl_bom_num,
+        COALESCE(SUM(ph.units_produced), 0) as total_units,
+        COUNT(*) as tasks_completed,
+        COALESCE(SUM(ph.actual_seconds / 3600.0), 0) as total_hours,
+        COALESCE(SUM(ph.labor_cost), 0) as labor_cost,
+        COALESCE(SUM(ph.equipment_cost), 0) as equipment_cost,
+        COALESCE(SUM(ph.expected_seconds / 3600.0), 0) as expected_hours
+      FROM production_history ph
       WHERE ${filterClause}
-      GROUP BY p.id, p.name
+      GROUP BY ph.fishbowl_bom_id, ph.fishbowl_bom_num
       ORDER BY total_units DESC
     `,
     args: filterArgs
   });
 
-  const products: ProductSummary[] = (result.rows as unknown as {
-    product_id: number;
-    product_name: string;
+  const boms: BOMSummary[] = (result.rows as unknown as {
+    fishbowl_bom_id: number;
+    fishbowl_bom_num: string;
     total_units: number;
     tasks_completed: number;
     total_hours: number;
@@ -524,215 +406,78 @@ async function getProductSummary(filters: Filters): Promise<Response> {
     equipment_cost: number;
     expected_hours: number;
   }[]).map(row => ({
-    productId: row.product_id,
-    productName: row.product_name,
+    fishbowlBomId: row.fishbowl_bom_id,
+    fishbowlBomNum: row.fishbowl_bom_num,
     totalUnits: row.total_units,
     tasksCompleted: row.tasks_completed,
     totalHours: Math.round(row.total_hours * 100) / 100,
     laborCost: Math.round(row.labor_cost * 100) / 100,
     equipmentCost: Math.round(row.equipment_cost * 100) / 100,
     totalCost: Math.round((row.labor_cost + row.equipment_cost) * 100) / 100,
-    plannedUnits: 0, // Deprecated
     efficiency: row.total_hours > 0 ? Math.round((row.expected_hours / row.total_hours) * 100) : 0
   }));
 
   return Response.json({
     period: { start: filters.startDate, end: filters.endDate },
-    products
+    // Use both names for compatibility
+    boms,
+    products: boms // alias
   });
 }
 
-async function getOrderSummary(filters: Filters): Promise<Response> {
+async function getDemandSummary(filters: Filters): Promise<Response> {
   const { clause: filterClause, args: filterArgs } = buildFilterClause(filters);
 
-  // First, get the absolute last step sequence and total estimated time for each order's build version
-  const stepsResult = await db.execute(`
-    SELECT
-      o.id as order_id,
-      o.quantity as order_quantity,
-      s.build_version_id,
-      MAX(bvs.sequence) as last_step_seq,
-      SUM(ps.time_per_piece_seconds) as total_time_per_unit_seconds
-    FROM orders o
-    JOIN schedules s ON s.order_id = o.id
-    JOIN build_version_steps bvs ON bvs.build_version_id = s.build_version_id
-    JOIN product_steps ps ON bvs.product_step_id = ps.id
-    GROUP BY o.id, s.build_version_id
-  `);
-
-  const orderMeta = new Map<number, { lastSeq: number; totalEstimatedHours: number; numSteps: number }>();
-  for (const row of stepsResult.rows as unknown as {
-    order_id: number;
-    order_quantity: number;
-    last_step_seq: number;
-    total_time_per_unit_seconds: number;
-  }[]) {
-    // Total estimated = (sum of all step times per unit) × quantity, converted to hours
-    const totalEstimatedHours = (row.total_time_per_unit_seconds * row.order_quantity) / 3600;
-    // Count number of steps (last_step_seq is the max sequence, which equals step count for 1-indexed sequences)
-    orderMeta.set(row.order_id, {
-      lastSeq: row.last_step_seq,
-      totalEstimatedHours,
-      numSteps: row.last_step_seq
-    });
-  }
-
-  // Get per-step output for each order, grouped by step sequence
   const result = await db.execute({
     sql: `
       SELECT
-        o.id as order_id,
-        p.name as product_name,
-        o.quantity as order_quantity,
-        bvs.sequence as step_sequence,
-        COALESCE(SUM(twa.actual_output), 0) as step_output,
-        COUNT(DISTINCT CASE WHEN twa.status = 'completed' THEN twa.id END) as tasks_completed,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END
-          ELSE 0 END
-        ), 0) as total_hours,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN ((julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END) * w.cost_per_hour
-          ELSE 0 END
-        ), 0) as labor_cost,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL AND ps.equipment_id IS NOT NULL
-          THEN ((julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END) * e.hourly_cost
-          ELSE 0 END
-        ), 0) as equipment_cost
-      FROM schedule_entries se
-      JOIN schedules s ON se.schedule_id = s.id
-      JOIN orders o ON s.order_id = o.id
-      JOIN products p ON o.product_id = p.id
-      JOIN build_version_steps bvs ON bvs.product_step_id = se.product_step_id
-        AND bvs.build_version_id = s.build_version_id
-      LEFT JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-      LEFT JOIN workers w ON twa.worker_id = w.id
-      LEFT JOIN product_steps ps ON se.product_step_id = ps.id
-      LEFT JOIN equipment e ON ps.equipment_id = e.id
+        ph.demand_entry_id,
+        de.fishbowl_bom_num,
+        de.customer_name,
+        de.quantity as demand_quantity,
+        de.quantity_completed,
+        COUNT(*) as tasks_completed,
+        COALESCE(SUM(ph.actual_seconds / 3600.0), 0) as total_hours,
+        COALESCE(SUM(ph.labor_cost), 0) as labor_cost,
+        COALESCE(SUM(ph.equipment_cost), 0) as equipment_cost
+      FROM production_history ph
+      JOIN demand_entries de ON ph.demand_entry_id = de.id
       WHERE ${filterClause}
-      GROUP BY o.id, p.name, o.quantity, bvs.sequence
-      ORDER BY o.id, bvs.sequence
+      GROUP BY ph.demand_entry_id, de.fishbowl_bom_num, de.customer_name, de.quantity, de.quantity_completed
+      ORDER BY de.quantity_completed DESC
     `,
     args: filterArgs
   });
 
-  // Group rows by order_id and calculate metrics
-  const orderMap = new Map<number, {
-    productName: string;
-    orderQuantity: number;
-    stepOutputs: Map<number, number>; // sequence -> output
-    totalStepCompletions: number; // sum of all step outputs
-    tasksCompleted: number;
-    totalHours: number;
-    laborCost: number;
-    equipmentCost: number;
-  }>();
-
-  for (const row of result.rows as unknown as {
-    order_id: number;
-    product_name: string;
-    order_quantity: number;
-    step_sequence: number;
-    step_output: number;
+  const demands: DemandSummary[] = (result.rows as unknown as {
+    demand_entry_id: number;
+    fishbowl_bom_num: string;
+    customer_name: string | null;
+    demand_quantity: number;
+    quantity_completed: number;
     tasks_completed: number;
     total_hours: number;
     labor_cost: number;
     equipment_cost: number;
-  }[]) {
-    if (!orderMap.has(row.order_id)) {
-      orderMap.set(row.order_id, {
-        productName: row.product_name,
-        orderQuantity: row.order_quantity,
-        stepOutputs: new Map(),
-        totalStepCompletions: 0,
-        tasksCompleted: 0,
-        totalHours: 0,
-        laborCost: 0,
-        equipmentCost: 0,
-      });
-    }
-    const order = orderMap.get(row.order_id)!;
-    order.stepOutputs.set(row.step_sequence, row.step_output);
-    order.totalStepCompletions += row.step_output;
-    order.tasksCompleted += row.tasks_completed;
-    order.totalHours += row.total_hours;
-    order.laborCost += row.labor_cost;
-    order.equipmentCost += row.equipment_cost;
-  }
-
-  // Convert to OrderSummary array with proper completion metrics
-  const orders: OrderSummary[] = [];
-  for (const [orderId, data] of orderMap) {
-    const meta = orderMeta.get(orderId);
-    const lastSeq = meta?.lastSeq ?? 1;
-    const totalEstimatedHoursIdeal = meta?.totalEstimatedHours ?? 0;
-    const numSteps = meta?.numSteps ?? 1;
-
-    // Get sequences that have data, sorted
-    const sequencesWithData = [...data.stepOutputs.keys()].sort((a, b) => a - b);
-
-    // Started = first step that has production data (not absolute first, since some steps like "Cut Fabric" aren't tracked)
-    const firstStepOutput = sequencesWithData.length > 0 ? (data.stepOutputs.get(sequencesWithData[0]!) ?? 0) : 0;
-
-    // Complete = absolute last step (must finish all steps to be complete)
-    const lastStepOutput = data.stepOutputs.get(lastSeq) ?? 0;
-
-    const unitsComplete = lastStepOutput;
-    const unitsStarted = firstStepOutput;
-    const unitsInProgress = Math.max(0, unitsStarted - unitsComplete);
-    const unitsNotStarted = Math.max(0, data.orderQuantity - unitsStarted);
-
-    // Progress vs Ideal: based on time_per_piece_seconds from product definitions
-    const estimatedHoursRemainingIdeal = Math.max(0, totalEstimatedHoursIdeal - data.totalHours);
-    const progressPercentIdeal = totalEstimatedHoursIdeal > 0
-      ? Math.round((data.totalHours / totalEstimatedHoursIdeal) * 100)
-      : 0;
-
-    // Progress vs Actual Efficiency: based on observed pace
-    // Total step completions needed = orderQuantity × numSteps
-    const totalStepCompletionsNeeded = data.orderQuantity * numSteps;
-    // Actual hours per step completion (based on work done so far)
-    const actualHoursPerStepCompletion = data.totalStepCompletions > 0
-      ? data.totalHours / data.totalStepCompletions
-      : 0;
-    // Estimated total hours based on actual pace
-    const totalEstimatedHoursActual = totalStepCompletionsNeeded * actualHoursPerStepCompletion;
-    const estimatedHoursRemainingActual = Math.max(0, totalEstimatedHoursActual - data.totalHours);
-    const progressPercentActual = totalEstimatedHoursActual > 0
-      ? Math.round((data.totalHours / totalEstimatedHoursActual) * 100)
-      : 0;
-
-    orders.push({
-      orderId,
-      productName: data.productName,
-      orderQuantity: data.orderQuantity,
-      unitsComplete,
-      unitsInProgress,
-      unitsNotStarted,
-      progressPercentIdeal,
-      estimatedHoursRemainingIdeal: Math.round(estimatedHoursRemainingIdeal * 100) / 100,
-      progressPercentActual,
-      estimatedHoursRemainingActual: Math.round(estimatedHoursRemainingActual * 100) / 100,
-      tasksCompleted: data.tasksCompleted,
-      totalHours: Math.round(data.totalHours * 100) / 100,
-      laborCost: Math.round(data.laborCost * 100) / 100,
-      equipmentCost: Math.round(data.equipmentCost * 100) / 100,
-      totalCost: Math.round((data.laborCost + data.equipmentCost) * 100) / 100,
-    });
-  }
-
-  // Sort by progress (incomplete first)
-  orders.sort((a, b) => a.progressPercentIdeal - b.progressPercentIdeal);
+  }[]).map(row => ({
+    demandId: row.demand_entry_id,
+    fishbowlBomNum: row.fishbowl_bom_num,
+    customerName: row.customer_name,
+    demandQuantity: row.demand_quantity,
+    quantityCompleted: row.quantity_completed,
+    progressPercent: row.demand_quantity > 0 ? Math.round((row.quantity_completed / row.demand_quantity) * 100) : 0,
+    tasksCompleted: row.tasks_completed,
+    totalHours: Math.round(row.total_hours * 100) / 100,
+    laborCost: Math.round(row.labor_cost * 100) / 100,
+    equipmentCost: Math.round(row.equipment_cost * 100) / 100,
+    totalCost: Math.round((row.labor_cost + row.equipment_cost) * 100) / 100,
+  }));
 
   return Response.json({
     period: { start: filters.startDate, end: filters.endDate },
-    orders
+    // Use both names for compatibility
+    demands,
+    orders: demands // alias
   });
 }
 
@@ -742,95 +487,43 @@ async function getStepSummary(filters: Filters): Promise<Response> {
   const result = await db.execute({
     sql: `
       SELECT
-        ps.id as step_id,
-        ps.name as step_name,
-        p.name as product_name,
-        ps.sequence,
-        ps.time_per_piece_seconds,
-        COALESCE(SUM(twa.actual_output), 0) as total_units,
-        COUNT(DISTINCT CASE WHEN twa.status = 'completed' THEN twa.id END) as tasks_completed,
-        COUNT(DISTINCT twa.worker_id) as worker_count,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END
-          ELSE 0 END
-        ), 0) as total_hours,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN ((julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END) * w.cost_per_hour
-          ELSE 0 END
-        ), 0) as labor_cost,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL AND ps.equipment_id IS NOT NULL
-          THEN ((julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24
-            - CASE WHEN time(twa.actual_start_time) < '12:00' AND time(twa.actual_end_time) > '11:30' THEN 0.5 ELSE 0 END) * e.hourly_cost
-          ELSE 0 END
-        ), 0) as equipment_cost,
-        COALESCE(SUM(
-          CASE WHEN twa.actual_output > 0
-          THEN ps.time_per_piece_seconds * twa.actual_output / 3600.0
-          ELSE 0 END
-        ), 0) as expected_hours
-      FROM schedule_entries se
-      JOIN schedules s ON se.schedule_id = s.id
-      JOIN orders o ON s.order_id = o.id
-      JOIN products p ON o.product_id = p.id
-      JOIN product_steps ps ON se.product_step_id = ps.id
-      LEFT JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-      LEFT JOIN workers w ON twa.worker_id = w.id
-      LEFT JOIN equipment e ON ps.equipment_id = e.id
+        ph.bom_step_id,
+        ph.step_name,
+        ph.fishbowl_bom_num,
+        bs.time_per_piece_seconds,
+        COALESCE(SUM(ph.units_produced), 0) as total_units,
+        COUNT(*) as tasks_completed,
+        COUNT(DISTINCT ph.worker_id) as worker_count,
+        COALESCE(SUM(ph.actual_seconds / 3600.0), 0) as total_hours,
+        COALESCE(SUM(ph.labor_cost), 0) as labor_cost,
+        COALESCE(SUM(ph.equipment_cost), 0) as equipment_cost,
+        COALESCE(SUM(ph.expected_seconds / 3600.0), 0) as expected_hours
+      FROM production_history ph
+      LEFT JOIN bom_steps bs ON ph.bom_step_id = bs.id
       WHERE ${filterClause}
-      GROUP BY ps.id, ps.name, p.name, ps.sequence, ps.time_per_piece_seconds
-      ORDER BY p.name, ps.sequence
+      GROUP BY ph.bom_step_id, ph.step_name, ph.fishbowl_bom_num, bs.time_per_piece_seconds
+      ORDER BY ph.fishbowl_bom_num, total_units DESC
     `,
     args: filterArgs
   });
 
-  // Get step IDs for additional queries
-  const stepIds = (result.rows as unknown as { step_id: number }[]).map(r => r.step_id);
+  // Get step IDs for top performers query
+  const stepIds = (result.rows as unknown as { bom_step_id: number }[]).map(r => r.bom_step_id);
 
   // Get top performers per step
   const performersResult = stepIds.length > 0 ? await db.execute({
     sql: `
       SELECT
-        ps.id as step_id,
-        w.id as worker_id,
-        w.name as worker_name,
-        SUM(twa.actual_output) as output,
-        SUM(
-          CASE WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 24 * 3600
-          ELSE 0 END
-        ) as total_seconds,
-        ps.time_per_piece_seconds
-      FROM task_worker_assignments twa
-      JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-      JOIN product_steps ps ON se.product_step_id = ps.id
-      JOIN workers w ON twa.worker_id = w.id
-      WHERE twa.status = 'completed'
-        AND twa.actual_output > 0
-        AND ps.id IN (${stepIds.map(() => "?").join(",")})
-      GROUP BY ps.id, w.id
-      ORDER BY ps.id, output DESC
-    `,
-    args: stepIds
-  }) : { rows: [] };
-
-  // Get proficient workers per step
-  const proficienciesResult = stepIds.length > 0 ? await db.execute({
-    sql: `
-      SELECT
-        wp.product_step_id as step_id,
-        w.id as worker_id,
-        w.name as worker_name,
-        wp.level
-      FROM worker_proficiencies wp
-      JOIN workers w ON wp.worker_id = w.id
-      WHERE wp.level >= 3
-        AND wp.product_step_id IN (${stepIds.map(() => "?").join(",")})
-      ORDER BY wp.product_step_id, wp.level DESC, w.name
+        ph.bom_step_id,
+        ph.worker_id,
+        ph.worker_name,
+        SUM(ph.units_produced) as output,
+        SUM(ph.actual_seconds) as total_seconds,
+        SUM(ph.expected_seconds) as expected_seconds
+      FROM production_history ph
+      WHERE ph.bom_step_id IN (${stepIds.map(() => "?").join(",")})
+      GROUP BY ph.bom_step_id, ph.worker_id, ph.worker_name
+      ORDER BY ph.bom_step_id, output DESC
     `,
     args: stepIds
   }) : { rows: [] };
@@ -838,21 +531,20 @@ async function getStepSummary(filters: Filters): Promise<Response> {
   // Group performers by step (top 3)
   const performersByStep = new Map<number, { workerId: number; workerName: string; output: number; efficiency: number }[]>();
   for (const row of performersResult.rows as unknown as {
-    step_id: number;
+    bom_step_id: number;
     worker_id: number;
     worker_name: string;
     output: number;
     total_seconds: number;
-    time_per_piece_seconds: number;
+    expected_seconds: number;
   }[]) {
-    if (!performersByStep.has(row.step_id)) {
-      performersByStep.set(row.step_id, []);
+    if (!performersByStep.has(row.bom_step_id)) {
+      performersByStep.set(row.bom_step_id, []);
     }
-    const stepPerformers = performersByStep.get(row.step_id)!;
+    const stepPerformers = performersByStep.get(row.bom_step_id)!;
     if (stepPerformers.length < 3) {
-      const actualSecondsPerPiece = row.output > 0 ? row.total_seconds / row.output : 0;
-      const efficiency = actualSecondsPerPiece > 0 && row.time_per_piece_seconds > 0
-        ? Math.round((row.time_per_piece_seconds / actualSecondsPerPiece) * 100)
+      const efficiency = row.total_seconds > 0 && row.expected_seconds > 0
+        ? Math.round((row.expected_seconds / row.total_seconds) * 100)
         : 0;
       stepPerformers.push({
         workerId: row.worker_id,
@@ -863,30 +555,11 @@ async function getStepSummary(filters: Filters): Promise<Response> {
     }
   }
 
-  // Group proficiencies by step
-  const proficienciesByStep = new Map<number, { workerId: number; workerName: string; level: number }[]>();
-  for (const row of proficienciesResult.rows as unknown as {
-    step_id: number;
-    worker_id: number;
-    worker_name: string;
-    level: number;
-  }[]) {
-    if (!proficienciesByStep.has(row.step_id)) {
-      proficienciesByStep.set(row.step_id, []);
-    }
-    proficienciesByStep.get(row.step_id)!.push({
-      workerId: row.worker_id,
-      workerName: row.worker_name,
-      level: row.level,
-    });
-  }
-
   const steps: StepSummary[] = (result.rows as unknown as {
-    step_id: number;
+    bom_step_id: number;
     step_name: string;
-    product_name: string;
-    sequence: number;
-    time_per_piece_seconds: number;
+    fishbowl_bom_num: string;
+    time_per_piece_seconds: number | null;
     total_units: number;
     tasks_completed: number;
     worker_count: number;
@@ -899,10 +572,9 @@ async function getStepSummary(filters: Filters): Promise<Response> {
     const actualSecondsPerPiece = row.total_units > 0 ? totalSeconds / row.total_units : null;
 
     return {
-      stepId: row.step_id,
+      bomStepId: row.bom_step_id,
       stepName: row.step_name,
-      productName: row.product_name,
-      sequence: row.sequence,
+      fishbowlBomNum: row.fishbowl_bom_num,
       totalUnits: row.total_units,
       tasksCompleted: row.tasks_completed,
       workerCount: row.worker_count,
@@ -911,10 +583,9 @@ async function getStepSummary(filters: Filters): Promise<Response> {
       equipmentCost: Math.round(row.equipment_cost * 100) / 100,
       totalCost: Math.round((row.labor_cost + row.equipment_cost) * 100) / 100,
       efficiency: row.total_hours > 0 ? Math.round((row.expected_hours / row.total_hours) * 100) : 0,
-      estimatedSecondsPerPiece: row.time_per_piece_seconds,
+      estimatedSecondsPerPiece: row.time_per_piece_seconds || 0,
       actualSecondsPerPiece: actualSecondsPerPiece ? Math.round(actualSecondsPerPiece * 10) / 10 : null,
-      topPerformers: performersByStep.get(row.step_id) || [],
-      proficientWorkers: proficienciesByStep.get(row.step_id) || [],
+      topPerformers: performersByStep.get(row.bom_step_id) || [],
     };
   });
 
@@ -922,4 +593,86 @@ async function getStepSummary(filters: Filters): Promise<Response> {
     period: { start: filters.startDate, end: filters.endDate },
     steps
   });
+}
+
+async function getProductionHistory(url: URL): Promise<Response> {
+  const limit = parseInt(url.searchParams.get("limit") || "500");
+  const startDate = url.searchParams.get("start_date");
+  const endDate = url.searchParams.get("end_date");
+
+  let dateFilter = "";
+  const args: (string | number)[] = [];
+
+  if (startDate && endDate) {
+    dateFilter = "WHERE ph.date BETWEEN ? AND ?";
+    args.push(startDate, endDate);
+  } else if (startDate) {
+    dateFilter = "WHERE ph.date >= ?";
+    args.push(startDate);
+  } else if (endDate) {
+    dateFilter = "WHERE ph.date <= ?";
+    args.push(endDate);
+  }
+
+  args.push(limit);
+
+  const result = await db.execute({
+    sql: `
+      SELECT
+        ph.id,
+        ph.fishbowl_bom_num,
+        ph.demand_entry_id,
+        de.due_date as demand_due_date,
+        ph.step_name,
+        ph.worker_name,
+        ph.date as work_date,
+        ph.start_time,
+        ph.end_time,
+        ph.units_produced,
+        ph.actual_seconds,
+        ph.expected_seconds,
+        ph.efficiency_percent
+      FROM production_history ph
+      LEFT JOIN demand_entries de ON ph.demand_entry_id = de.id
+      ${dateFilter}
+      ORDER BY ph.date DESC, ph.start_time DESC
+      LIMIT ?
+    `,
+    args,
+  });
+
+  const entries = (result.rows as unknown as {
+    id: number;
+    fishbowl_bom_num: string;
+    demand_entry_id: number | null;
+    demand_due_date: string | null;
+    step_name: string;
+    worker_name: string;
+    work_date: string;
+    start_time: string;
+    end_time: string;
+    units_produced: number;
+    actual_seconds: number;
+    expected_seconds: number;
+    efficiency_percent: number;
+  }[]).map(row => ({
+    id: row.id,
+    productName: row.fishbowl_bom_num, // alias for compatibility
+    fishbowlBomNum: row.fishbowl_bom_num,
+    demandId: row.demand_entry_id,
+    orderId: row.demand_entry_id, // alias for compatibility
+    demandDueDate: row.demand_due_date,
+    orderDueDate: row.demand_due_date, // alias for compatibility
+    stepName: row.step_name,
+    workerName: row.worker_name,
+    workDate: row.work_date,
+    startTime: row.start_time,
+    endTime: row.end_time,
+    unitsProduced: row.units_produced,
+    actualSeconds: row.actual_seconds,
+    expectedSeconds: row.expected_seconds,
+    efficiencyPercent: row.efficiency_percent,
+  }));
+
+  return Response.json({ entries });
 }
