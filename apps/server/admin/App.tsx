@@ -41,6 +41,7 @@ import FishbowlBOMs from "./pages/FishbowlBOMs";
 import FishbowlOrders from "./pages/FishbowlOrders";
 import DemandPool from "./pages/DemandPool";
 import PlanningRuns from "./pages/PlanningRuns";
+import PlanningRunDetail from "./pages/PlanningRunDetail";
 import ActivePlan from "./pages/ActivePlan";
 import BOMSteps from "./pages/BOMSteps";
 
@@ -138,6 +139,7 @@ function App() {
           <Switch>
             <Route path="/" component={Dashboard} />
             <Route path="/planning/demand" component={DemandPool} />
+            <Route path="/planning/runs/:id" component={PlanningRunDetail} />
             <Route path="/planning/runs" component={PlanningRuns} />
             <Route path="/planning/active" component={ActivePlan} />
             <Route path="/fishbowl/boms" component={FishbowlBOMs} />

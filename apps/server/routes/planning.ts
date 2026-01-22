@@ -11,6 +11,10 @@ import {
   getActivePlanningRun,
   acceptScenario,
   archivePlanningRun,
+  deletePlanningRun,
+  getScenarioScheduleWithContext,
+  validateScenarioSchedule,
+  forkScenario,
 } from "../services/planning/planner";
 import type { PlanningScenario } from "../db/schema";
 
@@ -49,6 +53,7 @@ export async function handlePlanning(request: Request): Promise<Response | null>
         planning_end_date: body.planning_end_date,
         demand_entry_ids: body.demand_entry_ids,
         created_by: body.created_by,
+        preferences: body.preferences,
       });
 
       return Response.json({ run }, { status: 201 });
@@ -75,6 +80,19 @@ export async function handlePlanning(request: Request): Promise<Response | null>
     }
 
     return Response.json({ run });
+  }
+
+  // DELETE /api/planning/runs/:id
+  const runsDeleteMatch = url.pathname.match(/^\/api\/planning\/runs\/(\d+)$/);
+  if (runsDeleteMatch && request.method === "DELETE") {
+    const id = parseInt(runsDeleteMatch[1]!);
+    const deleted = await deletePlanningRun(db, id);
+
+    if (!deleted) {
+      return Response.json({ error: "Planning run not found" }, { status: 404 });
+    }
+
+    return Response.json({ success: true });
   }
 
   // POST /api/planning/runs/:id/accept/:scenarioId
@@ -187,6 +205,64 @@ export async function handlePlanning(request: Request): Promise<Response | null>
       },
       scenarios: comparison,
     });
+  }
+
+  // GET /api/planning/scenarios/:id/schedule - Get schedule with context for preview/editing
+  const scheduleMatch = url.pathname.match(/^\/api\/planning\/scenarios\/(\d+)\/schedule$/);
+  if (scheduleMatch && request.method === "GET") {
+    const id = parseInt(scheduleMatch[1]!);
+
+    try {
+      const data = await getScenarioScheduleWithContext(db, id);
+      if (!data) {
+        return Response.json({ error: "Scenario not found" }, { status: 404 });
+      }
+      return Response.json(data);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to get scenario schedule";
+      return Response.json({ error: message }, { status: 500 });
+    }
+  }
+
+  // POST /api/planning/scenarios/:id/validate - Validate a schedule without saving
+  const validateMatch = url.pathname.match(/^\/api\/planning\/scenarios\/(\d+)\/validate$/);
+  if (validateMatch && request.method === "POST") {
+    const id = parseInt(validateMatch[1]!);
+    const body = await request.json() as any;
+
+    if (!body.schedule || !Array.isArray(body.schedule)) {
+      return Response.json({ error: "Missing required field: schedule (array)" }, { status: 400 });
+    }
+
+    try {
+      const result = await validateScenarioSchedule(db, id, body.schedule);
+      return Response.json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to validate schedule";
+      return Response.json({ error: message }, { status: 500 });
+    }
+  }
+
+  // POST /api/planning/scenarios/:id/fork - Fork a scenario with edited schedule
+  const forkMatch = url.pathname.match(/^\/api\/planning\/scenarios\/(\d+)\/fork$/);
+  if (forkMatch && request.method === "POST") {
+    const id = parseInt(forkMatch[1]!);
+    const body = await request.json() as any;
+
+    if (!body.schedule || !Array.isArray(body.schedule)) {
+      return Response.json({ error: "Missing required field: schedule (array)" }, { status: 400 });
+    }
+
+    try {
+      const scenario = await forkScenario(db, id, {
+        name: body.name,
+        schedule: body.schedule,
+      });
+      return Response.json({ scenario }, { status: 201 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to fork scenario";
+      return Response.json({ error: message }, { status: 500 });
+    }
   }
 
   return null;

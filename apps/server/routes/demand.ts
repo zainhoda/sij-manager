@@ -76,6 +76,8 @@ export async function handleDemand(request: Request): Promise<Response | null> {
       customer_name: body.customer_name,
       notes: body.notes,
       color: body.color,
+      production_hold_until: body.production_hold_until,
+      production_hold_reason: body.production_hold_reason,
     });
 
     return Response.json(entry, { status: 201 });
@@ -205,6 +207,8 @@ export async function handleDemand(request: Request): Promise<Response | null> {
       quantity_completed: body.quantity_completed,
       step_config_id: body.step_config_id,
       color: body.color,
+      production_hold_until: body.production_hold_until,
+      production_hold_reason: body.production_hold_reason,
     });
 
     if (!entry) {

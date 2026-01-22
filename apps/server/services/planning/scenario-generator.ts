@@ -3,7 +3,7 @@
  * Implements different planning strategies: meet_deadlines, minimize_cost, balanced
  */
 
-import type { DemandEntry, BOMStep, Worker } from "../../db/schema";
+import type { DemandEntry, Worker, BOMStep } from "../../db/schema";
 import {
   WORK_DAY,
   timeToMinutes,
@@ -11,6 +11,8 @@ import {
   addDays,
   isWeekend,
   getNextWorkday,
+  type PlanningPreferences,
+  type BOMStepWithDeps,
 } from "./planner";
 
 export interface ScenarioInput {
@@ -18,10 +20,11 @@ export interface ScenarioInput {
   startDate: string;
   endDate: string;
   demandEntries: DemandEntry[];
-  bomStepsMap: Map<number, BOMStep[]>;
+  bomStepsMap: Map<number, BOMStepWithDeps[]>;
   workers: Worker[];
   equipment: { id: number; name: string; station_count: number; hourly_cost: number }[];
   workerCertifications: Map<number, Set<number>>; // workerId -> Set<equipmentId>
+  preferences?: PlanningPreferences;
 }
 
 export interface ScenarioResult {
@@ -45,8 +48,15 @@ export interface ScenarioResult {
   warnings: string[];
 }
 
+export interface ScheduleTaskConstraint {
+  type: 'dependency' | 'certification' | 'work_category' | 'availability' | 'batch';
+  description: string;
+}
+
 export interface ScheduleTask {
   demandEntryId: number;
+  batchNumber: number;
+  batchQuantity: number;
   bomStepId: number;
   stepName: string;
   date: string;
@@ -54,6 +64,8 @@ export interface ScheduleTask {
   endTime: string;
   plannedOutput: number;
   workerIds: number[];
+  assignmentReason: string;
+  constraints: ScheduleTaskConstraint[];
 }
 
 export interface DemandProjection {
@@ -64,12 +76,218 @@ export interface DemandProjection {
   canMeetTarget: boolean;
 }
 
+// Batch tracking
+interface Batch {
+  batchNumber: number;
+  quantity: number;
+}
+
+// Step state for dependency tracking
+interface StepBatchState {
+  started: boolean;
+  startedDate: string | null;
+  startedMinutes: number;
+  completed: boolean;
+  completedDate: string | null;
+  completedMinutes: number;
+}
+
 // Work slot tracking
 interface WorkSlot {
   workerId: number;
   date: string;
   startMinutes: number;
   endMinutes: number;
+}
+
+/**
+ * Calculate batches for a demand entry based on preferences
+ */
+function calculateBatches(
+  demand: DemandEntry,
+  preferences?: PlanningPreferences
+): Batch[] {
+  const total = demand.quantity;
+
+  // Get batch sizes from per-demand preferences (default to full quantity = no batching)
+  const demandPrefs = preferences?.batching?.perDemand?.[demand.id];
+  const minSize = demandPrefs?.minBatchSize ?? total;
+  const maxSize = demandPrefs?.maxBatchSize ?? total;
+
+  // Default: use max batch size to minimize number of batches
+  const batchSize = Math.min(maxSize, total);
+  const batches: Batch[] = [];
+
+  let remaining = total;
+  let batchNum = 1;
+
+  while (remaining > 0) {
+    const thisSize = Math.min(batchSize, remaining);
+
+    // Don't create tiny batches below min (add to last batch instead)
+    if (thisSize < minSize && batches.length > 0) {
+      batches[batches.length - 1]!.quantity += thisSize;
+      remaining = 0;
+    } else {
+      batches.push({ batchNumber: batchNum++, quantity: thisSize });
+      remaining -= thisSize;
+    }
+  }
+
+  return batches;
+}
+
+/**
+ * Get the earliest time a step can start based on dependency completion times
+ * @param step The step to check
+ * @param batchNumber The batch number
+ * @param stepBatchStates Map of "stepId:batchNumber" -> state
+ * @returns The earliest start time, or null if no dependencies constrain the start
+ */
+function getEarliestStartTime(
+  step: BOMStepWithDeps,
+  batchNumber: number,
+  stepBatchStates: Map<string, StepBatchState>
+): { date: string; minutes: number } | null {
+  let latestDate: string | null = null;
+  let latestMinutes = 0;
+
+  // Check BOM step dependencies (finish-to-start within same batch)
+  for (const dep of step.dependencies) {
+    if (dep.type === 'finish') {
+      const key = `${dep.dependsOnStepId}:${batchNumber}`;
+      const state = stepBatchStates.get(key);
+      if (state?.completedDate) {
+        if (!latestDate || state.completedDate > latestDate ||
+            (state.completedDate === latestDate && state.completedMinutes > latestMinutes)) {
+          latestDate = state.completedDate;
+          latestMinutes = state.completedMinutes;
+        }
+      }
+    }
+  }
+
+  // Check previous batch of same step must complete first
+  if (batchNumber > 1) {
+    const prevKey = `${step.id}:${batchNumber - 1}`;
+    const prevState = stepBatchStates.get(prevKey);
+    if (prevState?.completedDate) {
+      if (!latestDate || prevState.completedDate > latestDate ||
+          (prevState.completedDate === latestDate && prevState.completedMinutes > latestMinutes)) {
+        latestDate = prevState.completedDate;
+        latestMinutes = prevState.completedMinutes;
+      }
+    }
+  }
+
+  return latestDate ? { date: latestDate, minutes: latestMinutes } : null;
+}
+
+/**
+ * Check if a step's dependencies are satisfied for a given batch
+ * @param step The step to check
+ * @param batchNumber The batch number
+ * @param stepBatchStates Map of "stepId:batchNumber" -> state
+ * @param allSteps All steps for this demand (for looking up dependency names)
+ */
+function dependenciesSatisfied(
+  step: BOMStepWithDeps,
+  batchNumber: number,
+  stepBatchStates: Map<string, StepBatchState>,
+  allSteps: BOMStepWithDeps[]
+): boolean {
+  // Check BOM step dependencies (within same batch)
+  for (const dep of step.dependencies) {
+    const key = `${dep.dependsOnStepId}:${batchNumber}`;
+    const depState = stepBatchStates.get(key);
+
+    if (!depState) return false;
+
+    if (dep.type === 'start') {
+      if (!depState.started) return false;
+    } else {
+      if (!depState.completed) return false;
+    }
+  }
+
+  // Check batch dependency: previous batch of same step must be completed
+  if (batchNumber > 1) {
+    const prevBatchKey = `${step.id}:${batchNumber - 1}`;
+    const prevBatchState = stepBatchStates.get(prevBatchKey);
+    if (!prevBatchState || !prevBatchState.completed) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Build assignment reasoning for a scheduled task
+ */
+function buildAssignmentReason(
+  step: BOMStepWithDeps,
+  batchNumber: number,
+  worker: Worker,
+  qualifiedWorkers: Worker[],
+  allSteps: BOMStepWithDeps[],
+  equipment: { id: number; name: string }[]
+): { reason: string; constraints: ScheduleTaskConstraint[] } {
+  const constraints: ScheduleTaskConstraint[] = [];
+
+  // Add dependency constraints
+  for (const dep of step.dependencies) {
+    const depStep = allSteps.find((s) => s.id === dep.dependsOnStepId);
+    constraints.push({
+      type: 'dependency',
+      description: dep.type === 'start'
+        ? `Can start once "${depStep?.name || 'unknown step'}" begins`
+        : `Must wait for "${depStep?.name || 'unknown step'}" to complete`,
+    });
+  }
+
+  // Add batch dependency if not first batch
+  if (batchNumber > 1) {
+    constraints.push({
+      type: 'batch',
+      description: `Must wait for batch ${batchNumber - 1} of this step to complete`,
+    });
+  }
+
+  // Add certification constraint if equipment required
+  if (step.equipment_id) {
+    const equip = equipment.find((e) => e.id === step.equipment_id);
+    constraints.push({
+      type: 'certification',
+      description: `Requires certification for ${equip?.name || 'equipment'}`,
+    });
+  }
+
+  // Add work category constraint
+  if (step.work_category_id) {
+    constraints.push({
+      type: 'work_category',
+      description: `Requires matching work category`,
+    });
+  }
+
+  // Add availability note if limited options
+  if (qualifiedWorkers.length === 1) {
+    constraints.push({
+      type: 'availability',
+      description: `Only qualified worker available`,
+    });
+  } else if (qualifiedWorkers.length > 1) {
+    constraints.push({
+      type: 'availability',
+      description: `Selected from ${qualifiedWorkers.length} qualified workers`,
+    });
+  }
+
+  // Build human-readable summary
+  const reason = constraints.map((c) => c.description).join('; ');
+
+  return { reason, constraints };
 }
 
 // Worker schedule state
@@ -183,67 +401,161 @@ async function generateScenario(
   const regularMinutesPerDay = WORK_DAY.totalMinutes;
   const maxOvertimeMinutes = config.overtimeLimitHoursPerDay * 60;
 
-  // Process each demand entry
+  // Validate dependencies exist for all multi-step BOMs
   for (const demand of sortedDemand) {
     const steps = input.bomStepsMap.get(demand.fishbowl_bom_id) || [];
 
     if (steps.length === 0) {
-      warnings.push(`No BOM steps found for demand ${demand.id} (BOM ${demand.fishbowl_bom_num})`);
-      demandProjections.push({
-        demandEntryId: demand.id,
-        adjustedTargetDate: null,
-        assignedPriority: demand.priority,
-        projectedCompletionDate: demand.target_completion_date,
-        canMeetTarget: false,
-      });
-      continue;
+      throw new Error(
+        `No BOM steps defined for BOM ${demand.fishbowl_bom_num}. ` +
+        `Please define BOM steps before planning.`
+      );
+    }
+
+    // Check that at least some dependencies exist (except for single-step BOMs)
+    if (steps.length > 1) {
+      const stepsWithDeps = steps.filter((s) => s.dependencies.length > 0);
+      if (stepsWithDeps.length === 0) {
+        throw new Error(
+          `No dependencies defined for BOM ${demand.fishbowl_bom_num} which has ${steps.length} steps. ` +
+          `Please define step dependencies before planning.`
+        );
+      }
+    }
+  }
+
+  // Process each demand entry with batch processing and dependency-aware scheduling
+  for (const demand of sortedDemand) {
+    const steps = input.bomStepsMap.get(demand.fishbowl_bom_id) || [];
+
+    // Calculate batches for this demand
+    const batches = calculateBatches(demand, input.preferences);
+
+    // Track state for each step-batch combination
+    // Key: "stepId:batchNumber"
+    const stepBatchStates = new Map<string, StepBatchState>();
+
+    // Initialize all step-batch combinations as pending
+    interface PendingWork {
+      step: BOMStepWithDeps;
+      batch: Batch;
+      remainingMinutes: number;
+      totalMinutes: number;
+    }
+    const pendingWork: PendingWork[] = [];
+
+    for (const batch of batches) {
+      for (const step of steps) {
+        const totalSecondsNeeded = step.time_per_piece_seconds * batch.quantity;
+        const totalMinutesNeeded = Math.ceil(totalSecondsNeeded / 60);
+
+        pendingWork.push({
+          step,
+          batch,
+          remainingMinutes: totalMinutesNeeded,
+          totalMinutes: totalMinutesNeeded,
+        });
+
+        // Initialize state
+        const key = `${step.id}:${batch.batchNumber}`;
+        stepBatchStates.set(key, {
+          started: false,
+          startedDate: null,
+          startedMinutes: 0,
+          completed: false,
+          completedDate: null,
+          completedMinutes: 0,
+        });
+      }
     }
 
     let currentDate = getNextWorkday(input.startDate);
     let demandCompletionDate = currentDate;
+    let iterationCount = 0;
+    const maxIterations = 10000; // Safety limit
 
-    // Schedule each step sequentially
-    for (const step of steps) {
-      const totalSecondsNeeded = step.time_per_piece_seconds * demand.quantity;
-      const totalMinutesNeeded = Math.ceil(totalSecondsNeeded / 60);
-      let remainingMinutes = totalMinutesNeeded;
+    // Process work until all complete
+    while (pendingWork.some((w) => w.remainingMinutes > 0) && iterationCount < maxIterations) {
+      iterationCount++;
 
-      // Find qualified workers for this step
-      const qualifiedWorkers = getQualifiedWorkers(
-        input.workers,
-        step,
-        input.workerCertifications
-      );
+      // Find work items whose dependencies are satisfied
+      const readyWork = pendingWork.filter((w) => {
+        if (w.remainingMinutes <= 0) return false;
 
-      if (qualifiedWorkers.length === 0) {
-        warnings.push(
-          `No qualified workers for step "${step.name}" in demand ${demand.id}`
-        );
-        continue;
+        const key = `${w.step.id}:${w.batch.batchNumber}`;
+        const state = stepBatchStates.get(key)!;
+
+        // If already started, continue it
+        if (state.started && !state.completed) return true;
+
+        // Check if dependencies are satisfied
+        return dependenciesSatisfied(w.step, w.batch.batchNumber, stepBatchStates, steps);
+      });
+
+      if (readyWork.length === 0) {
+        // Check if we're stuck (circular dependency or bug)
+        const remaining = pendingWork.filter((w) => w.remainingMinutes > 0);
+        if (remaining.length > 0) {
+          throw new Error(
+            `Could not schedule remaining work for BOM ${demand.fishbowl_bom_num}. ` +
+            `Possible circular dependency. Stuck on ${remaining.length} step-batch combinations.`
+          );
+        }
+        break;
       }
 
-      // Schedule work blocks until step is complete
-      while (remainingMinutes > 0) {
-        // Find next available slot
+      // Try to schedule each ready work item
+      for (const work of readyWork) {
+        const { step, batch } = work;
+        const key = `${step.id}:${batch.batchNumber}`;
+        const state = stepBatchStates.get(key)!;
+
+        // Find qualified workers for this step
+        const qualifiedWorkers = getQualifiedWorkers(
+          input.workers,
+          step,
+          input.workerCertifications
+        );
+
+        if (qualifiedWorkers.length === 0) {
+          warnings.push(
+            `No qualified workers for step "${step.name}" batch ${batch.batchNumber} in demand ${demand.id}`
+          );
+          work.remainingMinutes = 0; // Skip this work
+          state.completed = true;
+          state.completedDate = currentDate;
+          continue;
+        }
+
+        // Calculate earliest start time based on dependency completion times
+        const earliestStartTime = getEarliestStartTime(step, batch.batchNumber, stepBatchStates);
+
+        // Find next available slot (respecting dependency completion times)
         const slot = findNextAvailableSlot(
           qualifiedWorkers,
           workerSchedule,
           currentDate,
           input.endDate,
           config.allowOvertime,
-          maxOvertimeMinutes
+          maxOvertimeMinutes,
+          earliestStartTime
         );
 
         if (!slot) {
-          warnings.push(
-            `Could not schedule all work for step "${step.name}" in demand ${demand.id}`
-          );
-          break;
+          // No slot available, try next iteration (time may advance)
+          continue;
+        }
+
+        // Mark as started if not already
+        if (!state.started) {
+          state.started = true;
+          state.startedDate = slot.date;
+          state.startedMinutes = slot.startMinutes;
         }
 
         // Calculate work duration for this slot
         const slotDuration = slot.endMinutes - slot.startMinutes;
-        const workMinutes = Math.min(remainingMinutes, slotDuration);
+        const workMinutes = Math.min(work.remainingMinutes, slotDuration);
         const actualEndMinutes = slot.startMinutes + workMinutes;
 
         // Calculate output for this block
@@ -253,9 +565,21 @@ async function generateScenario(
         // Get the worker for this slot
         const worker = input.workers.find((w) => w.id === slot.workerId)!;
 
+        // Build assignment reasoning
+        const { reason, constraints } = buildAssignmentReason(
+          step,
+          batch.batchNumber,
+          worker,
+          qualifiedWorkers,
+          steps,
+          input.equipment
+        );
+
         // Create schedule task
         schedule.push({
           demandEntryId: demand.id,
+          batchNumber: batch.batchNumber,
+          batchQuantity: batch.quantity,
           bomStepId: step.id,
           stepName: step.name,
           date: slot.date,
@@ -263,6 +587,8 @@ async function generateScenario(
           endTime: minutesToTime(actualEndMinutes),
           plannedOutput: outputInBlock,
           workerIds: [slot.workerId],
+          assignmentReason: reason,
+          constraints,
         });
 
         // Update worker schedule
@@ -293,14 +619,25 @@ async function generateScenario(
           }
         }
 
-        remainingMinutes -= workMinutes;
+        work.remainingMinutes -= workMinutes;
         currentDate = slot.date;
 
         // Track completion date
         if (slot.date > demandCompletionDate) {
           demandCompletionDate = slot.date;
         }
+
+        // Mark as completed if done
+        if (work.remainingMinutes <= 0) {
+          state.completed = true;
+          state.completedDate = slot.date;
+          state.completedMinutes = actualEndMinutes;
+        }
       }
+    }
+
+    if (iterationCount >= maxIterations) {
+      warnings.push(`Max iterations reached for demand ${demand.id} - schedule may be incomplete`);
     }
 
     // Track latest completion
@@ -352,7 +689,7 @@ async function generateScenario(
  */
 function getQualifiedWorkers(
   workers: Worker[],
-  step: BOMStep,
+  step: BOMStepWithDeps,
   certifications: Map<number, Set<number>>
 ): Worker[] {
   return workers.filter((worker) => {
@@ -364,10 +701,7 @@ function getQualifiedWorkers(
       }
     }
 
-    // Check work category match if specified
-    if (step.work_category_id && worker.work_category_id !== step.work_category_id) {
-      return false;
-    }
+    // Work category is descriptive only - not used for filtering
 
     return true;
   });
@@ -375,6 +709,7 @@ function getQualifiedWorkers(
 
 /**
  * Find the next available work slot for any qualified worker
+ * @param earliestStartTime If provided, only return slots that start at or after this time
  */
 function findNextAvailableSlot(
   qualifiedWorkers: Worker[],
@@ -382,21 +717,33 @@ function findNextAvailableSlot(
   startDate: string,
   endDate: string,
   allowOvertime: boolean,
-  maxOvertimeMinutes: number
+  maxOvertimeMinutes: number,
+  earliestStartTime: { date: string; minutes: number } | null = null
 ): WorkSlot | null {
   const dayStartMinutes = timeToMinutes(WORK_DAY.morningStart);
   const dayEndMinutes = timeToMinutes(WORK_DAY.dayEnd);
   const lunchStartMinutes = timeToMinutes(WORK_DAY.lunchStart);
   const lunchEndMinutes = timeToMinutes(WORK_DAY.lunchEnd);
 
-  let currentDate = startDate;
+  // If we have an earliest start time, start searching from that date
+  const effectiveStartDate = earliestStartTime && earliestStartTime.date > startDate
+    ? earliestStartTime.date
+    : startDate;
+
+  let currentDate = effectiveStartDate;
 
   // Search up to 60 days ahead
   for (let dayOffset = 0; dayOffset < 60; dayOffset++) {
-    currentDate = getNextWorkday(addDays(startDate, dayOffset));
+    currentDate = getNextWorkday(addDays(effectiveStartDate, dayOffset));
 
     if (currentDate > endDate) {
       return null; // Beyond planning horizon
+    }
+
+    // Determine the minimum start time for this date
+    let minStartMinutes = dayStartMinutes;
+    if (earliestStartTime && currentDate === earliestStartTime.date) {
+      minStartMinutes = earliestStartTime.minutes;
     }
 
     // Try each worker
@@ -414,12 +761,26 @@ function findNextAvailableSlot(
         maxOvertimeMinutes
       );
 
-      if (availableSlots.length > 0) {
-        const slot = availableSlots[0]!;
+      // Filter and adjust slots based on minimum start time
+      for (const slot of availableSlots) {
+        // Skip slots that end before or at the minimum start time
+        if (slot.end <= minStartMinutes) {
+          continue;
+        }
+
+        // Adjust slot start if it's before the minimum
+        const adjustedStart = Math.max(slot.start, minStartMinutes);
+        const adjustedDuration = slot.end - adjustedStart;
+
+        // Skip if the adjusted slot is too small (< 15 minutes)
+        if (adjustedDuration < 15) {
+          continue;
+        }
+
         return {
           workerId: worker.id,
           date: currentDate,
-          startMinutes: slot.start,
+          startMinutes: adjustedStart,
           endMinutes: slot.end,
         };
       }

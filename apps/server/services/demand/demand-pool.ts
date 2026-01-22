@@ -23,6 +23,8 @@ export interface CreateDemandInput {
   customer_name?: string;
   notes?: string;
   color?: string;
+  production_hold_until?: string;
+  production_hold_reason?: string;
 }
 
 export interface UpdateDemandInput {
@@ -36,6 +38,8 @@ export interface UpdateDemandInput {
   quantity_completed?: number;
   step_config_id?: number;
   color?: string;
+  production_hold_until?: string | null;
+  production_hold_reason?: string | null;
 }
 
 export interface DemandQueryOptions {
@@ -207,11 +211,13 @@ export async function createDemandEntry(
         customer_name,
         notes,
         color,
+        production_hold_until,
+        production_hold_reason,
         status,
         quantity_completed,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
       RETURNING *
     `,
     args: [
@@ -231,6 +237,8 @@ export async function createDemandEntry(
       input.customer_name || null,
       input.notes || null,
       input.color || null,
+      input.production_hold_until || null,
+      input.production_hold_reason || null,
       now,
       now,
     ],
@@ -315,6 +323,16 @@ export async function updateDemandEntry(
   if (input.color !== undefined) {
     updates.push("color = ?");
     params.push(input.color);
+  }
+
+  if (input.production_hold_until !== undefined) {
+    updates.push("production_hold_until = ?");
+    params.push(input.production_hold_until);
+  }
+
+  if (input.production_hold_reason !== undefined) {
+    updates.push("production_hold_reason = ?");
+    params.push(input.production_hold_reason);
   }
 
   if (updates.length === 0) {

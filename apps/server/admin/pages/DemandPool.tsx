@@ -17,6 +17,7 @@ import {
   Trash2,
   Settings,
   X,
+  PauseCircle,
 } from "lucide-react";
 
 interface DemandEntry {
@@ -36,6 +37,8 @@ interface DemandEntry {
   status: "pending" | "planned" | "in_progress" | "completed" | "cancelled";
   quantity_completed: number;
   color: string | null;
+  production_hold_until: string | null;
+  production_hold_reason: string | null;
   bom_description?: string;
   total_steps?: number;
 }
@@ -103,6 +106,8 @@ export default function DemandPool() {
   const [editQuantity, setEditQuantity] = useState("");
   const [editDueDate, setEditDueDate] = useState("");
   const [editPriority, setEditPriority] = useState<number>(3);
+  const [editHoldUntil, setEditHoldUntil] = useState("");
+  const [editHoldReason, setEditHoldReason] = useState("");
 
   const fetchSummary = useCallback(async () => {
     try {
@@ -174,6 +179,14 @@ export default function DemandPool() {
     const today = new Date();
     const weekFromNow = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000);
     return dueDate <= weekFromNow && dueDate >= today;
+  };
+
+  const isOnHold = (entry: DemandEntry) => {
+    if (!entry.production_hold_until) return false;
+    const holdDate = parseLocalDate(entry.production_hold_until);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return holdDate > today;
   };
 
   // BOM search for autocomplete
@@ -250,6 +263,8 @@ export default function DemandPool() {
     setEditQuantity(entry.quantity.toString());
     setEditDueDate(entry.due_date.split("T")[0] || entry.due_date); // Format as YYYY-MM-DD
     setEditPriority(entry.priority);
+    setEditHoldUntil(entry.production_hold_until?.split("T")[0] || "");
+    setEditHoldReason(entry.production_hold_reason || "");
     setShowEditModal(true);
   };
 
@@ -265,6 +280,8 @@ export default function DemandPool() {
           quantity: parseInt(editQuantity),
           due_date: editDueDate,
           priority: editPriority,
+          production_hold_until: editHoldUntil || null,
+          production_hold_reason: editHoldReason || null,
         }),
       });
 
@@ -496,19 +513,46 @@ export default function DemandPool() {
                       </div>
                     </td>
                     <td style={{ padding: "12px 16px", textAlign: "center" }}>
-                      <span
-                        style={{
-                          display: "inline-block",
-                          padding: "2px 8px",
-                          borderRadius: 4,
-                          fontSize: 12,
-                          fontWeight: 500,
-                          background: STATUS_COLORS[entry.status]?.bg || "#e5e7eb",
-                          color: STATUS_COLORS[entry.status]?.text || "#374151",
-                        }}
-                      >
-                        {entry.status.replace("_", " ")}
-                      </span>
+                      {isOnHold(entry) ? (
+                        <div
+                          title={entry.production_hold_reason || undefined}
+                          style={{ cursor: entry.production_hold_reason ? "help" : undefined }}
+                        >
+                          <div
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 4,
+                              padding: "2px 8px",
+                              borderRadius: 4,
+                              fontSize: 12,
+                              fontWeight: 500,
+                              background: "#fef3c7",
+                              color: "#92400e",
+                            }}
+                          >
+                            <PauseCircle size={12} />
+                            Production Hold
+                          </div>
+                          <div style={{ fontSize: 11, color: "#92400e", marginTop: 2 }}>
+                            until {formatDate(entry.production_hold_until!)}
+                          </div>
+                        </div>
+                      ) : (
+                        <span
+                          style={{
+                            display: "inline-block",
+                            padding: "2px 8px",
+                            borderRadius: 4,
+                            fontSize: 12,
+                            fontWeight: 500,
+                            background: STATUS_COLORS[entry.status]?.bg || "#e5e7eb",
+                            color: STATUS_COLORS[entry.status]?.text || "#374151",
+                          }}
+                        >
+                          {entry.status.replace("_", " ")}
+                        </span>
+                      )}
                     </td>
                     <td style={{ padding: "12px 16px", textAlign: "center" }}>
                       <span
@@ -829,7 +873,7 @@ export default function DemandPool() {
               />
             </div>
 
-            <div style={{ marginBottom: 24 }}>
+            <div style={{ marginBottom: 16 }}>
               <label style={{ display: "block", marginBottom: 4, fontSize: 14, fontWeight: 500 }}>Priority</label>
               <select
                 value={editPriority}
@@ -848,6 +892,62 @@ export default function DemandPool() {
                 <option value={4}>4 - Low</option>
                 <option value={5}>5 - Lowest</option>
               </select>
+            </div>
+
+            <div style={{ marginBottom: 24, padding: 12, background: "#f8fafc", borderRadius: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <label style={{ fontSize: 14, fontWeight: 500 }}>Production Hold</label>
+                {(editHoldUntil || editHoldReason) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditHoldUntil("");
+                      setEditHoldReason("");
+                    }}
+                    className="btn btn-secondary"
+                    style={{ padding: "4px 8px", fontSize: 12 }}
+                  >
+                    Clear Hold
+                  </button>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: "block", marginBottom: 4, fontSize: 12, color: "#64748b" }}>
+                    Hold Until
+                  </label>
+                  <input
+                    type="date"
+                    value={editHoldUntil}
+                    onChange={(e) => setEditHoldUntil(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 8,
+                      fontSize: 14,
+                    }}
+                  />
+                </div>
+                <div style={{ flex: 2 }}>
+                  <label style={{ display: "block", marginBottom: 4, fontSize: 12, color: "#64748b" }}>
+                    Reason
+                  </label>
+                  <input
+                    type="text"
+                    value={editHoldReason}
+                    onChange={(e) => setEditHoldReason(e.target.value)}
+                    placeholder="e.g., Awaiting approval..."
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 8,
+                      fontSize: 14,
+                    }}
+                  />
+                </div>
+              </div>
             </div>
 
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>

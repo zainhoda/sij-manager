@@ -152,9 +152,25 @@ export async function generateEquipmentMatrixCSV(): Promise<string> {
  *
  * Format:
  * bom_num,config_name,version_number,is_default,step_code,category,component,task_name,time_seconds,equipment_code,dependencies
+ *
+ * This function exports:
+ * 1. Steps linked via bom_step_configurations (versioned configs)
+ * 2. Steps directly in bom_steps that have no configuration (exports as "Default" config)
  */
 export async function generateProductsCSV(): Promise<string> {
-  // Get all BOM step configurations
+  const lines: string[] = [];
+
+  // Header
+  lines.push(toCSVRow([
+    "bom_num", "config_name", "version_number", "is_default",
+    "step_code", "category", "component", "task_name",
+    "time_seconds", "equipment_code", "dependencies"
+  ]));
+
+  // Track which BOMs have been exported via configurations
+  const exportedBomIds = new Set<number>();
+
+  // PART 1: Export steps from bom_step_configurations (versioned)
   const configsResult = await db.execute(`
     SELECT
       bsc.id as config_id,
@@ -175,17 +191,10 @@ export async function generateProductsCSV(): Promise<string> {
     is_default: number;
   }[];
 
-  const lines: string[] = [];
-
-  // Header
-  lines.push(toCSVRow([
-    "bom_num", "config_name", "version_number", "is_default",
-    "step_code", "category", "component", "task_name",
-    "time_seconds", "equipment_code", "dependencies"
-  ]));
-
   // Process each configuration
   for (const config of configs) {
+    exportedBomIds.add(config.fishbowl_bom_id);
+
     // Get steps for this config via bom_config_steps
     const stepsResult = await db.execute({
       sql: `
@@ -259,6 +268,105 @@ export async function generateProductsCSV(): Promise<string> {
         config.config_name,
         config.version_number,
         config.is_default ? "Y" : "",
+        step.step_code || "",
+        step.category || "",
+        step.component_name || "",
+        step.task_name,
+        step.time_per_piece_seconds,
+        step.equipment_code || "",
+        depsStr
+      ]));
+    }
+  }
+
+  // PART 2: Export steps directly from bom_steps that don't have configurations
+  // These are steps created via the BOM Steps UI that haven't been versioned
+  const directStepsResult = await db.execute(`
+    SELECT
+      bs.id as step_id,
+      bs.fishbowl_bom_id,
+      bs.fishbowl_bom_num as bom_num,
+      bs.step_code,
+      bs.name as task_name,
+      bs.time_per_piece_seconds,
+      bs.sequence,
+      wc.name as category,
+      c.name as component_name,
+      e.name as equipment_code
+    FROM bom_steps bs
+    LEFT JOIN work_categories wc ON bs.work_category_id = wc.id
+    LEFT JOIN components c ON bs.component_id = c.id
+    LEFT JOIN equipment e ON bs.equipment_id = e.id
+    ORDER BY bs.fishbowl_bom_num, bs.sequence
+  `);
+  const directSteps = directStepsResult.rows as unknown as {
+    step_id: number;
+    fishbowl_bom_id: number;
+    bom_num: string;
+    step_code: string | null;
+    task_name: string;
+    time_per_piece_seconds: number;
+    sequence: number;
+    category: string | null;
+    component_name: string | null;
+    equipment_code: string | null;
+  }[];
+
+  // Group steps by BOM and only export BOMs not already exported via configurations
+  const bomStepsMap = new Map<number, typeof directSteps>();
+  for (const step of directSteps) {
+    if (exportedBomIds.has(step.fishbowl_bom_id)) {
+      continue; // Skip BOMs already exported via configurations
+    }
+    if (!bomStepsMap.has(step.fishbowl_bom_id)) {
+      bomStepsMap.set(step.fishbowl_bom_id, []);
+    }
+    bomStepsMap.get(step.fishbowl_bom_id)!.push(step);
+  }
+
+  // Get dependencies for all direct steps
+  const allDirectStepIds = directSteps
+    .filter(s => !exportedBomIds.has(s.fishbowl_bom_id))
+    .map(s => s.step_id);
+
+  let directDependenciesMap = new Map<number, { step_code: string; type: string }[]>();
+  if (allDirectStepIds.length > 0) {
+    const placeholders = allDirectStepIds.map(() => "?").join(",");
+    const depsResult = await db.execute({
+      sql: `
+        SELECT sd.step_id, sd.dependency_type, bs.step_code
+        FROM bom_step_dependencies sd
+        JOIN bom_steps bs ON sd.depends_on_step_id = bs.id
+        WHERE sd.step_id IN (${placeholders})
+      `,
+      args: allDirectStepIds
+    });
+    const deps = depsResult.rows as unknown as { step_id: number; dependency_type: string; step_code: string | null }[];
+
+    for (const dep of deps) {
+      if (!directDependenciesMap.has(dep.step_id)) {
+        directDependenciesMap.set(dep.step_id, []);
+      }
+      directDependenciesMap.get(dep.step_id)!.push({
+        step_code: dep.step_code || "",
+        type: dep.dependency_type
+      });
+    }
+  }
+
+  // Output direct steps as "Default" configuration (version 1, is_default=Y)
+  for (const [_bomId, steps] of bomStepsMap) {
+    for (const step of steps) {
+      const deps = directDependenciesMap.get(step.step_id) || [];
+      const depsStr = deps.map(d =>
+        d.type === "start" ? `${d.step_code}:start` : d.step_code
+      ).join(",");
+
+      lines.push(toCSVRow([
+        step.bom_num,
+        "Default",
+        1,
+        "Y",
         step.step_code || "",
         step.category || "",
         step.component_name || "",

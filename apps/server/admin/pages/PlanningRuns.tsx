@@ -13,6 +13,7 @@ import {
   DollarSign,
   Scale,
   AlertTriangle,
+  Trash2,
 } from "lucide-react";
 
 interface PlanningRun {
@@ -110,6 +111,28 @@ export default function PlanningRuns() {
     return `$${amount.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
   };
 
+  const handleDelete = async (run: PlanningRun) => {
+    if (!confirm(`Are you sure you want to delete "${run.name}"? This will also delete all scenarios and tasks associated with this run.`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/planning/runs/${run.id}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to delete planning run");
+      }
+
+      fetchRuns();
+    } catch (error) {
+      console.error("Failed to delete planning run:", error);
+      alert(error instanceof Error ? error.message : "Failed to delete planning run");
+    }
+  };
+
   return (
     <div className="page">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -164,7 +187,7 @@ export default function PlanningRuns() {
             <span style={{ fontWeight: 600 }}>{planableDemand.length}</span>
             <span style={{ color: "#64748b", marginLeft: 8 }}>demand entries ready to plan</span>
           </div>
-          <Link href="/demand">
+          <Link href="/planning/demand">
             <button className="btn btn-secondary" style={{ fontSize: 13 }}>
               View Demand Pool
             </button>
@@ -211,12 +234,22 @@ export default function PlanningRuns() {
                     {run.description && ` • ${run.description}`}
                   </p>
                 </div>
-                <Link href={`/planning/runs/${run.id}`}>
-                  <button className="btn btn-secondary" style={{ fontSize: 13 }}>
-                    View Details
-                    <ChevronRight size={14} style={{ marginLeft: 4 }} />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Link href={`/planning/runs/${run.id}`}>
+                    <button className="btn btn-secondary" style={{ fontSize: 13 }}>
+                      View Details
+                      <ChevronRight size={14} style={{ marginLeft: 4 }} />
+                    </button>
+                  </Link>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ fontSize: 13, color: "#ef4444" }}
+                    onClick={() => handleDelete(run)}
+                    title="Delete planning run"
+                  >
+                    <Trash2 size={14} />
                   </button>
-                </Link>
+                </div>
               </div>
 
               {/* Scenarios summary */}
@@ -299,6 +332,11 @@ interface CreateModalProps {
   onCreated: (runId: number) => void;
 }
 
+interface DemandBatchConfig {
+  minBatchSize?: number;
+  maxBatchSize?: number;
+}
+
 function CreatePlanningRunModal({ planableDemand, onClose, onCreated }: CreateModalProps) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -310,6 +348,9 @@ function CreatePlanningRunModal({ planableDemand, onClose, onCreated }: CreateMo
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Batch preferences per demand item
+  const [batchConfigs, setBatchConfigs] = useState<Record<number, DemandBatchConfig>>({});
+
   const handleCreate = async () => {
     if (!name || !startDate || !endDate) {
       setError("Please fill in all required fields");
@@ -318,6 +359,27 @@ function CreatePlanningRunModal({ planableDemand, onClose, onCreated }: CreateMo
 
     setCreating(true);
     setError(null);
+
+    // Build preferences object with per-demand batch configs
+    const preferences: any = {};
+    const perDemandConfigs: Record<number, { minBatchSize?: number; maxBatchSize?: number }> = {};
+
+    for (const [demandIdStr, config] of Object.entries(batchConfigs)) {
+      const demandId = parseInt(demandIdStr);
+      if (config.minBatchSize || config.maxBatchSize) {
+        perDemandConfigs[demandId] = {};
+        if (config.minBatchSize) {
+          perDemandConfigs[demandId].minBatchSize = config.minBatchSize;
+        }
+        if (config.maxBatchSize) {
+          perDemandConfigs[demandId].maxBatchSize = config.maxBatchSize;
+        }
+      }
+    }
+
+    if (Object.keys(perDemandConfigs).length > 0) {
+      preferences.batching = { perDemand: perDemandConfigs };
+    }
 
     try {
       const response = await fetch("/api/planning/runs", {
@@ -329,6 +391,7 @@ function CreatePlanningRunModal({ planableDemand, onClose, onCreated }: CreateMo
           planning_start_date: startDate,
           planning_end_date: endDate,
           demand_entry_ids: selectedDemand.length > 0 ? selectedDemand : undefined,
+          preferences: Object.keys(preferences).length > 0 ? preferences : undefined,
         }),
       });
 
@@ -469,36 +532,100 @@ function CreatePlanningRunModal({ planableDemand, onClose, onCreated }: CreateMo
           </div>
           <div
             style={{
-              maxHeight: 200,
+              maxHeight: 300,
               overflow: "auto",
               border: "1px solid #e2e8f0",
               borderRadius: 8,
             }}
           >
-            {planableDemand.map((demand) => (
-              <label
-                key={demand.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "8px 12px",
-                  borderBottom: "1px solid #e2e8f0",
-                  cursor: "pointer",
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedDemand.includes(demand.id)}
-                  onChange={() => toggleDemand(demand.id)}
-                />
-                <span style={{ fontFamily: "monospace", fontSize: 12 }}>{demand.fishbowl_bom_num}</span>
-                <span style={{ color: "#64748b", fontSize: 12 }}>x{demand.quantity}</span>
-                <span style={{ marginLeft: "auto", color: "#64748b", fontSize: 12 }}>
-                  Due: {new Date(demand.due_date).toLocaleDateString()}
-                </span>
-              </label>
-            ))}
+            {planableDemand.map((demand) => {
+              const isSelected = selectedDemand.includes(demand.id);
+              const config = batchConfigs[demand.id] || {};
+              return (
+                <div
+                  key={demand.id}
+                  style={{
+                    padding: "8px 12px",
+                    borderBottom: "1px solid #e2e8f0",
+                    background: isSelected ? "#f0fdf4" : "transparent",
+                  }}
+                >
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleDemand(demand.id)}
+                    />
+                    <span style={{ fontFamily: "monospace", fontSize: 12 }}>{demand.fishbowl_bom_num}</span>
+                    <span style={{ color: "#64748b", fontSize: 12 }}>x{demand.quantity}</span>
+                    <span style={{ marginLeft: "auto", color: "#64748b", fontSize: 12 }}>
+                      Due: {new Date(demand.due_date).toLocaleDateString()}
+                    </span>
+                  </label>
+                  {isSelected && (
+                    <div style={{ display: "flex", gap: 8, marginTop: 8, marginLeft: 24 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <label style={{ fontSize: 11, color: "#64748b", whiteSpace: "nowrap" }}>Min batch:</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max={demand.quantity}
+                          value={config.minBatchSize || ""}
+                          onChange={(e) => {
+                            const val = e.target.value ? parseInt(e.target.value) : undefined;
+                            setBatchConfigs((prev) => ({
+                              ...prev,
+                              [demand.id]: { ...prev[demand.id], minBatchSize: val },
+                            }));
+                          }}
+                          placeholder="-"
+                          onClick={(e) => e.stopPropagation()}
+                          style={{
+                            width: 60,
+                            padding: "4px 6px",
+                            border: "1px solid #e2e8f0",
+                            borderRadius: 4,
+                            fontSize: 12,
+                          }}
+                        />
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <label style={{ fontSize: 11, color: "#64748b", whiteSpace: "nowrap" }}>Max batch:</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max={demand.quantity}
+                          value={config.maxBatchSize || ""}
+                          onChange={(e) => {
+                            const val = e.target.value ? parseInt(e.target.value) : undefined;
+                            setBatchConfigs((prev) => ({
+                              ...prev,
+                              [demand.id]: { ...prev[demand.id], maxBatchSize: val },
+                            }));
+                          }}
+                          placeholder="-"
+                          onClick={(e) => e.stopPropagation()}
+                          style={{
+                            width: 60,
+                            padding: "4px 6px",
+                            border: "1px solid #e2e8f0",
+                            borderRadius: 4,
+                            fontSize: 12,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <p style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>
             Leave empty to include all pending demand

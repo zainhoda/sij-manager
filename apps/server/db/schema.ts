@@ -235,6 +235,10 @@ export async function ensureSchema(db: Client) {
       -- Visual
       color TEXT,
 
+      -- Production hold
+      production_hold_until TEXT,
+      production_hold_reason TEXT,
+
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
 
@@ -258,6 +262,9 @@ export async function ensureSchema(db: Client) {
 
       -- Which scenario was accepted
       accepted_scenario_id INTEGER,
+
+      -- Planning preferences (JSON)
+      preferences_json TEXT,
 
       -- Status
       status TEXT DEFAULT 'draft' CHECK (status IN (
@@ -309,8 +316,12 @@ export async function ensureSchema(db: Client) {
       schedule_json TEXT,
       warnings_json TEXT,
 
+      -- Fork/edit lineage
+      parent_scenario_id INTEGER,
+
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (planning_run_id) REFERENCES planning_runs(id) ON DELETE CASCADE
+      FOREIGN KEY (planning_run_id) REFERENCES planning_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_scenario_id) REFERENCES planning_scenarios(id)
     )
   `);
 
@@ -526,6 +537,33 @@ export async function ensureSchema(db: Client) {
     // Column already exists
   }
 
+  // Add production hold columns to demand_entries (for existing databases)
+  try {
+    await db.execute("ALTER TABLE demand_entries ADD COLUMN production_hold_until TEXT");
+  } catch {
+    // Column already exists
+  }
+
+  try {
+    await db.execute("ALTER TABLE demand_entries ADD COLUMN production_hold_reason TEXT");
+  } catch {
+    // Column already exists
+  }
+
+  // Add preferences_json column to planning_runs (for existing databases)
+  try {
+    await db.execute("ALTER TABLE planning_runs ADD COLUMN preferences_json TEXT");
+  } catch {
+    // Column already exists
+  }
+
+  // Add parent_scenario_id column to planning_scenarios (for existing databases)
+  try {
+    await db.execute("ALTER TABLE planning_scenarios ADD COLUMN parent_scenario_id INTEGER REFERENCES planning_scenarios(id)");
+  } catch {
+    // Column already exists
+  }
+
   // ============================================================
   // SEED DATA - Work categories matching Fishbowl instruction names
   // ============================================================
@@ -690,6 +728,8 @@ export interface DemandEntry {
   status: 'pending' | 'planned' | 'in_progress' | 'completed' | 'cancelled';
   quantity_completed: number;
   color: string | null;
+  production_hold_until: string | null;
+  production_hold_reason: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -701,6 +741,7 @@ export interface PlanningRun {
   planning_start_date: string;
   planning_end_date: string;
   accepted_scenario_id: number | null;
+  preferences_json: string | null;
   status: 'draft' | 'pending' | 'accepted' | 'executed' | 'archived';
   created_by: string | null;
   accepted_by: string | null;
@@ -726,6 +767,7 @@ export interface PlanningScenario {
   latest_completion_date: string | null;
   schedule_json: string | null;
   warnings_json: string | null;
+  parent_scenario_id: number | null;
   created_at: string;
 }
 
