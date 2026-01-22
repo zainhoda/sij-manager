@@ -84,6 +84,7 @@ interface WorkCategory {
 interface Equipment {
   id: number;
   name: string;
+  description: string | null;
 }
 
 // Category colors for flow visualization - matches Fishbowl category names
@@ -224,7 +225,7 @@ export default function BOMSteps() {
     try {
       const response = await fetch("/api/equipment");
       const data = await response.json();
-      setEquipment(data.equipment || []);
+      setEquipment(data || []);
     } catch (error) {
       console.error("Failed to fetch equipment:", error);
     }
@@ -1154,6 +1155,11 @@ function AddStepModal({ boms, workCategories, equipment, selectedBOM, onSelectBO
                         <option key={eq.id} value={eq.id}>{eq.name}</option>
                       ))}
                     </select>
+                    {step.equipment_id && equipment.find(eq => eq.id === step.equipment_id)?.description && (
+                      <p style={{ marginTop: 4, fontSize: 12, color: "#64748b" }}>
+                        {equipment.find(eq => eq.id === step.equipment_id)?.description}
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1277,6 +1283,11 @@ function EditStepModal({ step, workCategories, equipment, onChange, onSave, onCl
                     <option key={eq.id} value={eq.id}>{eq.name}</option>
                   ))}
                 </select>
+                {step.equipment_id && equipment.find(eq => eq.id === step.equipment_id)?.description && (
+                  <p style={{ marginTop: 4, fontSize: 12, color: "#64748b" }}>
+                    {equipment.find(eq => eq.id === step.equipment_id)?.description}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -1558,6 +1569,11 @@ function InstructionRow({ instruction, isImported, workCategories, equipment, on
                   <option key={eq.id} value={eq.id}>{eq.name}</option>
                 ))}
               </select>
+              {equipmentId && equipment.find(eq => eq.id === equipmentId)?.description && (
+                <p style={{ marginTop: 4, fontSize: 11, color: "#64748b" }}>
+                  {equipment.find(eq => eq.id === equipmentId)?.description}
+                </p>
+              )}
             </div>
           </div>
           <button
