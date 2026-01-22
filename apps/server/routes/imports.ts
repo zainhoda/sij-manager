@@ -5,6 +5,7 @@
  */
 
 import { db } from "../db";
+import { parseEquipmentMatrix, type ParsedEquipmentMatrix } from "../services/import-parsers";
 
 // Preview token storage (in-memory with TTL)
 interface PreviewData {
@@ -129,15 +130,9 @@ export async function handleImports(request: Request): Promise<Response | null> 
 // Equipment Matrix Import
 // ============================================================
 
-interface ParsedEquipmentMatrix {
-  workCategories: string[];
-  equipment: { name: string; description: string; stationCount: number; workCategoryName: string; hourlyCost: number }[];
-  workers: { name: string; costPerHour: number }[];
-  certifications: { workerName: string; equipmentName: string }[];
-}
-
 async function handleEquipmentMatrixPreview(request: Request): Promise<Response> {
   let content: string;
+  let format: 'csv' | 'tsv' = 'csv';
 
   // Support both FormData (file upload) and JSON (paste content)
   const contentType = request.headers.get("content-type") || "";
@@ -147,6 +142,7 @@ async function handleEquipmentMatrixPreview(request: Request): Promise<Response>
       return Response.json({ error: "No content provided" }, { status: 400 });
     }
     content = body.content;
+    if (body.format === 'tsv') format = 'tsv';
   } else if (contentType.includes("multipart/form-data")) {
     const formData = await request.formData();
     const file = formData.get("file") as File;
@@ -154,90 +150,40 @@ async function handleEquipmentMatrixPreview(request: Request): Promise<Response>
       return Response.json({ error: "No file provided" }, { status: 400 });
     }
     content = await file.text();
+    // Auto-detect format from content
+    const firstLine = content.split('\n')[0] || '';
+    if (firstLine.includes('\t')) format = 'tsv';
   } else {
     return Response.json({ error: "Invalid content type. Use application/json or multipart/form-data" }, { status: 400 });
   }
 
-  const rows = parseSpreadsheet(content);
+  try {
+    // Use the correct parser from import-parsers.ts
+    const parsed = parseEquipmentMatrix(content, format);
 
-  if (rows.length < 2) {
-    return Response.json({ error: "File must have at least a header row and one data row" }, { status: 400 });
-  }
+    // Generate preview token
+    const token = generateToken();
+    previewStore.set(token, {
+      type: 'equipment-matrix',
+      data: parsed,
+      validation: { valid: true, errors: [], warnings: [] },
+      createdAt: Date.now()
+    });
 
-  const headerRow = rows[0]!;
-  const dataRows = rows.slice(1);
-
-  // Parse the matrix format:
-  // First column: worker names (or empty for equipment rows)
-  // First row: equipment names
-  // Cells: X or checkmark = certified
-
-  const equipment: ParsedEquipmentMatrix['equipment'] = [];
-  const workers: ParsedEquipmentMatrix['workers'] = [];
-  const certifications: ParsedEquipmentMatrix['certifications'] = [];
-  const workCategories = new Set<string>();
-
-  // Extract equipment from header (skip first column which is for worker names)
-  for (let i = 1; i < headerRow.length; i++) {
-    const equipName = headerRow[i]!.trim();
-    if (equipName) {
-      equipment.push({
-        name: equipName,
-        description: '',
-        stationCount: 1,
-        workCategoryName: 'General',
-        hourlyCost: 0
-      });
-      workCategories.add('General');
-    }
-  }
-
-  // Extract workers and certifications from data rows
-  for (const row of dataRows) {
-    const workerName = row[0]?.trim();
-    if (!workerName) continue;
-
-    workers.push({ name: workerName, costPerHour: 25 }); // Default rate
-
-    // Check certifications
-    for (let i = 1; i < row.length && i <= equipment.length; i++) {
-      const cell = row[i]?.trim().toLowerCase();
-      if (cell === 'x' || cell === '✓' || cell === 'yes' || cell === '1') {
-        certifications.push({
-          workerName,
-          equipmentName: equipment[i - 1]!.name
-        });
+    return Response.json({
+      token,
+      preview: {
+        workCategories: parsed.workCategories.size,
+        equipment: parsed.equipment.length,
+        workers: parsed.workers.length,
+        certifications: parsed.certifications.length,
+        sampleWorkers: parsed.workers.slice(0, 5).map(w => w.name),
+        sampleEquipment: parsed.equipment.slice(0, 5).map(e => e.name)
       }
-    }
+    });
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : 'Failed to parse file' }, { status: 400 });
   }
-
-  const parsed: ParsedEquipmentMatrix = {
-    workCategories: [...workCategories],
-    equipment,
-    workers,
-    certifications
-  };
-
-  // Generate preview token
-  const token = generateToken();
-  previewStore.set(token, {
-    type: 'equipment-matrix',
-    data: parsed,
-    validation: { valid: true, errors: [], warnings: [] },
-    createdAt: Date.now()
-  });
-
-  return Response.json({
-    token,
-    preview: {
-      workCategories: parsed.workCategories.length,
-      equipment: parsed.equipment.length,
-      workers: parsed.workers.length,
-      certifications: parsed.certifications.length,
-      sampleWorkers: parsed.workers.slice(0, 5).map(w => w.name),
-      sampleEquipment: parsed.equipment.slice(0, 5).map(e => e.name)
-    }
-  });
 }
 
 async function handleEquipmentMatrixConfirm(request: Request): Promise<Response> {
@@ -267,7 +213,7 @@ async function handleEquipmentMatrixConfirm(request: Request): Promise<Response>
   let workersCreated = 0;
   let certificationsCreated = 0;
 
-  // Insert work categories
+  // Insert work categories (workCategories is a Set<string>)
   for (const name of parsed.workCategories) {
     if (!existingCategoryNames.has(name)) {
       await db.execute({ sql: "INSERT INTO work_categories (name) VALUES (?)", args: [name] });
