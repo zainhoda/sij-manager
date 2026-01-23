@@ -1578,9 +1578,8 @@ body {
 }
 
 .certification-matrix {
-  width: 100%;
   border-collapse: collapse;
-  table-layout: fixed;
+  table-layout: auto;
 }
 
 .certification-matrix th,
@@ -1597,8 +1596,6 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 80px;
-  min-width: 50px;
 }
 
 .certification-matrix .row-label-header,
@@ -1629,17 +1626,21 @@ body {
   writing-mode: vertical-rl;
   text-orientation: mixed;
   transform: rotate(180deg);
-  height: 100px;
+  height: 140px;
   vertical-align: bottom;
-  padding: 8px 4px;
+  padding: 8px 2px;
+  min-width: 32px;
+  max-width: 32px;
+  font-size: 10px;
+  line-height: 1.2;
 }
 
 .certification-matrix .cert-cell {
   cursor: pointer;
-  min-width: 40px;
-  width: 40px;
-  height: 36px;
-  font-size: 14px;
+  min-width: 32px;
+  width: 32px;
+  height: 32px;
+  font-size: 12px;
   transition: background 0.15s;
   user-select: none;
 }

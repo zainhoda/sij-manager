@@ -46,6 +46,7 @@ import PlanningRunDetail from "./pages/PlanningRunDetail";
 import ActivePlan from "./pages/ActivePlan";
 import BOMSteps from "./pages/BOMSteps";
 import OrderDetail from "./pages/OrderDetail";
+import Orders from "./pages/Orders";
 import ProficiencyMatrix from "./pages/ProficiencyMatrix";
 
 interface NavItemProps {
@@ -183,6 +184,7 @@ function App() {
             <Route path="/equipment" component={Equipment} />
             <Route path="/production-summary" component={ProductionSummary} />
             <Route path="/recent-activity" component={RecentActivity} />
+            <Route path="/orders" component={Orders} />
             <Route path="/orders/:id/detail" component={OrderDetail} />
             <Route>
               <div className="page">

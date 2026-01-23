@@ -43,7 +43,7 @@ export async function handleProficiencies(request: Request): Promise<Response | 
     const stepsResult = await db.execute({ sql: stepsQuery, args: stepsArgs });
     const steps = stepsResult.rows;
 
-    // Get proficiencies derived from worker_step_performance
+    // Get proficiencies derived directly from production_history
     const stepIds = (steps as { id: number }[]).map(s => s.id);
     let proficiencies: { id: number; worker_id: number; product_step_id: number; level: number }[] = [];
 
@@ -51,22 +51,30 @@ export async function handleProficiencies(request: Request): Promise<Response | 
       const profResult = await db.execute({
         sql: `
           SELECT
-            id,
             worker_id,
             bom_step_id as product_step_id,
             CASE
-              WHEN avg_efficiency_percent >= 130 THEN 5
-              WHEN avg_efficiency_percent >= 115 THEN 4
-              WHEN avg_efficiency_percent >= 85 THEN 3
-              WHEN avg_efficiency_percent >= 70 THEN 2
+              WHEN AVG(efficiency_percent) >= 130 THEN 5
+              WHEN AVG(efficiency_percent) >= 115 THEN 4
+              WHEN AVG(efficiency_percent) >= 85 THEN 3
+              WHEN AVG(efficiency_percent) >= 70 THEN 2
               ELSE 1
-            END as level
-          FROM worker_step_performance
+            END as level,
+            COUNT(*) as sample_count
+          FROM production_history
           WHERE bom_step_id IN (${stepIds.map(() => "?").join(",")})
+            AND efficiency_percent IS NOT NULL
+          GROUP BY worker_id, bom_step_id
+          HAVING COUNT(*) >= 1
         `,
         args: stepIds
       });
-      proficiencies = profResult.rows as unknown as typeof proficiencies;
+      proficiencies = (profResult.rows as unknown as { worker_id: number; product_step_id: number; level: number }[]).map((row, idx) => ({
+        id: idx + 1,
+        worker_id: row.worker_id,
+        product_step_id: row.product_step_id,
+        level: row.level,
+      }));
     }
 
     // Get unique BOMs as "products" for filtering
