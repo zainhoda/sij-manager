@@ -178,6 +178,140 @@ export async function handleDemand(request: Request): Promise<Response | null> {
     return Response.json(result);
   }
 
+  // GET /api/orders/:id/detail - detailed order view with production history
+  const orderDetailMatch = url.pathname.match(/^\/api\/orders\/(\d+)\/detail$/);
+  if (orderDetailMatch && request.method === "GET") {
+    const orderId = parseInt(orderDetailMatch[1]!);
+    const entry = await getDemandEntry(db, orderId);
+
+    if (!entry) {
+      return Response.json({ error: "Order not found" }, { status: 404 });
+    }
+
+    // Get production history for this BOM
+    const historyResult = await db.execute({
+      sql: `
+        SELECT
+          step_name,
+          worker_id,
+          worker_name,
+          SUM(units_produced) as total_units,
+          SUM(actual_seconds) as total_seconds,
+          SUM(expected_seconds) as total_expected,
+          AVG(efficiency_percent) as avg_efficiency
+        FROM production_history
+        WHERE fishbowl_bom_num = ?
+        GROUP BY step_name, worker_id, worker_name
+        ORDER BY step_name, total_units DESC
+      `,
+      args: [entry.fishbowl_bom_num]
+    });
+    const history = historyResult.rows as any[];
+
+    // Aggregate by step
+    const stepMap = new Map<string, {
+      stepName: string;
+      completedUnits: number;
+      totalSeconds: number;
+      totalExpected: number;
+      workers: { workerId: number; workerName: string; unitsProduced: number; hoursWorked: number; efficiency: number | null }[];
+    }>();
+
+    for (const row of history) {
+      const existing = stepMap.get(row.step_name) || {
+        stepName: row.step_name,
+        completedUnits: 0,
+        totalSeconds: 0,
+        totalExpected: 0,
+        workers: [],
+      };
+      existing.completedUnits += Number(row.total_units) || 0;
+      existing.totalSeconds += Number(row.total_seconds) || 0;
+      existing.totalExpected += Number(row.total_expected) || 0;
+      existing.workers.push({
+        workerId: row.worker_id,
+        workerName: row.worker_name,
+        unitsProduced: Number(row.total_units) || 0,
+        hoursWorked: (Number(row.total_seconds) || 0) / 3600,
+        efficiency: row.avg_efficiency ? Math.round(Number(row.avg_efficiency)) : null,
+      });
+      stepMap.set(row.step_name, existing);
+    }
+
+    const steps = Array.from(stepMap.values()).map((step, idx) => {
+      const avgSecondsPerPiece = step.completedUnits > 0 ? step.totalSeconds / step.completedUnits : null;
+      const expectedSecondsPerPiece = step.completedUnits > 0 ? step.totalExpected / step.completedUnits : 60;
+      const efficiency = avgSecondsPerPiece && expectedSecondsPerPiece ? Math.round((expectedSecondsPerPiece / avgSecondsPerPiece) * 100) : null;
+
+      return {
+        stepId: idx + 1,
+        stepName: step.stepName,
+        sequence: idx + 1,
+        completedUnits: step.completedUnits,
+        totalUnits: entry.quantity,
+        progressPercent: Math.min(100, Math.round((step.completedUnits / entry.quantity) * 100)),
+        expectedSecondsPerPiece: Math.round(expectedSecondsPerPiece),
+        actualSecondsPerPiece: avgSecondsPerPiece ? Math.round(avgSecondsPerPiece) : null,
+        efficiency,
+        hoursWorked: step.totalSeconds / 3600,
+        hoursRemaining: Math.max(0, ((entry.quantity - step.completedUnits) * expectedSecondsPerPiece) / 3600),
+        isBottleneck: efficiency !== null && efficiency < 80,
+        workers: step.workers.map(w => ({
+          ...w,
+          proficiencyLevel: w.efficiency ? Math.min(5, Math.max(1, Math.round(w.efficiency / 25))) : null,
+        })),
+      };
+    });
+
+    // Calculate summary
+    const totalHoursWorked = steps.reduce((sum, s) => sum + s.hoursWorked, 0);
+    const totalHoursRemaining = steps.reduce((sum, s) => sum + s.hoursRemaining, 0);
+    const avgEfficiency = steps.length > 0
+      ? Math.round(steps.filter(s => s.efficiency).reduce((sum, s) => sum + (s.efficiency || 0), 0) / steps.filter(s => s.efficiency).length)
+      : null;
+
+    const today = new Date();
+    const dueDate = new Date(entry.due_date);
+    const daysUntilDue = Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+    // Estimate completion based on current pace
+    const progressPercent = entry.quantity > 0 ? (entry.quantity_completed / entry.quantity) * 100 : 0;
+    const isOnTrack = progressPercent >= 90 || daysUntilDue > 3;
+
+    return Response.json({
+      order: {
+        id: entry.id,
+        productName: entry.fishbowl_bom_num,
+        quantity: entry.quantity,
+        dueDate: entry.due_date,
+        status: entry.status,
+        startDate: entry.created_at,
+      },
+      summary: {
+        estimatedCompletionDate: entry.due_date,
+        daysUntilDue,
+        isOnTrack,
+        daysAheadOrBehind: isOnTrack ? 1 : -1,
+        overallEfficiency: avgEfficiency,
+        totalHoursWorked: Math.round(totalHoursWorked * 10) / 10,
+        totalHoursNeeded: Math.round((totalHoursWorked + totalHoursRemaining) * 10) / 10,
+      },
+      insights: {
+        overallStatus: isOnTrack ? 'on_track' : 'behind',
+        factors: steps.filter(s => s.isBottleneck).map(s => ({
+          type: 'bottleneck_step' as const,
+          impact: 'negative' as const,
+          severity: 2,
+          title: `${s.stepName} running slow`,
+          description: `Efficiency at ${s.efficiency}%`,
+          stepId: s.stepId,
+        })),
+        suggestions: progressPercent < 100 ? ['Continue production to meet deadline'] : ['Order nearly complete'],
+      },
+      steps,
+    });
+  }
+
   // GET /api/demand/:id
   const demandIdMatch = url.pathname.match(/^\/api\/demand\/(\d+)$/);
   if (demandIdMatch && request.method === "GET") {

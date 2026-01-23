@@ -4,6 +4,11 @@
 
 const API_BASE = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000';
 
+// App config
+export interface AppConfig {
+  isDemoMode: boolean;
+}
+
 // Types matching server responses
 export interface Product {
   id: number;
@@ -120,6 +125,9 @@ async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> 
 
   return response.json();
 }
+
+// App Config
+export const getAppConfig = () => fetchAPI<AppConfig>('/api/config');
 
 // Products
 export const getProducts = () => fetchAPI<Product[]>('/api/products');

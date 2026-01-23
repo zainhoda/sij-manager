@@ -1,6 +1,23 @@
 import { db } from "../db";
-import type { ScheduleEntry, WorkerProficiency, ProficiencyHistory } from "../db/schema";
-import { PROFICIENCY_MULTIPLIERS } from "../routes/proficiencies";
+
+// Proficiency multipliers - defined locally (no longer imported)
+// These map proficiency levels (1-5) to speed multipliers
+export const PROFICIENCY_MULTIPLIERS: Record<number, number> = {
+  1: 0.7,   // 70% speed - beginner
+  2: 0.85,  // 85% speed - learning
+  3: 1.0,   // 100% speed - proficient (baseline)
+  4: 1.15,  // 115% speed - advanced
+  5: 1.3,   // 130% speed - expert
+};
+
+// Derive proficiency level from efficiency percentage
+export function deriveProficiencyLevel(efficiencyPercent: number): number {
+  if (efficiencyPercent >= 130) return 5;
+  if (efficiencyPercent >= 115) return 4;
+  if (efficiencyPercent >= 85) return 3;
+  if (efficiencyPercent >= 70) return 2;
+  return 1;
+}
 
 interface StepProductivity {
   stepId: number;
@@ -28,60 +45,53 @@ interface ProductivityDataPoint {
   unitsProduced: number;
 }
 
-interface ProficiencyAdjustment {
-  workerId: number;
-  productStepId: number;
-  currentLevel: number;
-  newLevel: number;
-  reason: 'auto_increase' | 'auto_decrease';
-  avgEfficiency: number;
-  sampleSize: number;
+interface ProficiencyHistoryEntry {
+  date: string;
+  bomStepId: number;
+  stepName: string;
+  productName: string;
+  efficiencyPercent: number;
+  derivedLevel: number;
 }
 
-// Get worker productivity summary
+// Get worker productivity summary using production_history + bom_steps + worker_step_performance
 export async function getWorkerProductivity(workerId: number): Promise<ProductivitySummary | null> {
   const workerResult = await db.execute({
     sql: "SELECT id, name FROM workers WHERE id = ?",
     args: [workerId]
   });
   const worker = workerResult.rows[0] as unknown as { id: number; name: string } | undefined;
-  
+
   if (!worker) return null;
 
-  // Get completed entries with time calculations
+  // Get productivity from production_history grouped by step
   const entriesResult = await db.execute({
     sql: `
     SELECT
-      se.id,
-      se.product_step_id,
-      se.actual_start_time,
-      se.actual_end_time,
-      se.actual_output,
-      se.planned_output,
-      ps.name as step_name,
-      ps.category,
-      ps.time_per_piece_seconds
-    FROM schedule_entries se
-    JOIN product_steps ps ON se.product_step_id = ps.id
-    WHERE se.worker_id = ?
-    AND se.status = 'completed'
-    AND se.actual_start_time IS NOT NULL
-    AND se.actual_end_time IS NOT NULL
-    ORDER BY se.date DESC
+      ph.bom_step_id as step_id,
+      ph.step_name,
+      wc.name as category,
+      SUM(ph.units_produced) as total_units,
+      SUM(ph.actual_seconds) / 60.0 as total_minutes,
+      SUM(ph.expected_seconds) / 60.0 as expected_minutes,
+      COUNT(*) as entry_count
+    FROM production_history ph
+    JOIN bom_steps bs ON ph.bom_step_id = bs.id
+    LEFT JOIN work_categories wc ON bs.work_category_id = wc.id
+    WHERE ph.worker_id = ?
+    GROUP BY ph.bom_step_id, ph.step_name, wc.name
   `,
     args: [workerId]
   });
-  
+
   const entries = entriesResult.rows as unknown as {
-    id: number;
-    product_step_id: number;
-    actual_start_time: string;
-    actual_end_time: string;
-    actual_output: number;
-    planned_output: number;
+    step_id: number;
     step_name: string;
-    category: string;
-    time_per_piece_seconds: number;
+    category: string | null;
+    total_units: number;
+    total_minutes: number;
+    expected_minutes: number | null;
+    entry_count: number;
   }[];
 
   if (entries.length === 0) {
@@ -95,79 +105,44 @@ export async function getWorkerProductivity(workerId: number): Promise<Productiv
     };
   }
 
-  // Calculate metrics by step
-  const stepMetrics: Record<number, {
-    stepId: number;
-    stepName: string;
-    category: string;
-    totalUnits: number;
-    totalMinutes: number;
-    expectedMinutes: number;
-    entryCount: number;
-  }> = {};
-
+  // Calculate step breakdown with efficiency and derived proficiency
+  const stepBreakdown: StepProductivity[] = [];
   let totalMinutesWorked = 0;
   let totalUnits = 0;
   let totalExpectedMinutes = 0;
 
   for (const entry of entries) {
-    const startTime = new Date(`2000-01-01T${entry.actual_start_time}`);
-    const endTime = new Date(`2000-01-01T${entry.actual_end_time}`);
-    const actualMinutes = (endTime.getTime() - startTime.getTime()) / 60000;
-
-    const expectedMinutes = (entry.actual_output * entry.time_per_piece_seconds) / 60;
-
-    totalMinutesWorked += actualMinutes;
-    totalUnits += entry.actual_output;
-    totalExpectedMinutes += expectedMinutes;
-
-    if (!stepMetrics[entry.product_step_id]) {
-      stepMetrics[entry.product_step_id] = {
-        stepId: entry.product_step_id,
-        stepName: entry.step_name,
-        category: entry.category,
-        totalUnits: 0,
-        totalMinutes: 0,
-        expectedMinutes: 0,
-        entryCount: 0,
-      };
-    }
-
-    stepMetrics[entry.product_step_id]!.totalUnits += entry.actual_output;
-    stepMetrics[entry.product_step_id]!.totalMinutes += actualMinutes;
-    stepMetrics[entry.product_step_id]!.expectedMinutes += expectedMinutes;
-    stepMetrics[entry.product_step_id]!.entryCount += 1;
-  }
-
-  // Calculate step breakdown with efficiency and proficiency
-  const stepBreakdown: StepProductivity[] = [];
-  
-  for (const step of Object.values(stepMetrics)) {
-    const efficiency = step.totalMinutes > 0
-      ? (step.expectedMinutes / step.totalMinutes) * 100
+    const efficiency = entry.total_minutes > 0 && entry.expected_minutes
+      ? (entry.expected_minutes / entry.total_minutes) * 100
       : 0;
 
-    // Get current proficiency
-    const profResult = await db.execute({
-      sql: "SELECT level FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?",
-      args: [workerId, step.stepId]
+    // Get proficiency from worker_step_performance (derived from avg_efficiency_percent)
+    const perfResult = await db.execute({
+      sql: "SELECT avg_efficiency_percent FROM worker_step_performance WHERE worker_id = ? AND bom_step_id = ?",
+      args: [workerId, entry.step_id]
     });
-    const proficiency = profResult.rows[0] as unknown as { level: number } | undefined;
+    const perf = perfResult.rows[0] as unknown as { avg_efficiency_percent: number | null } | undefined;
+    const avgEfficiency = perf?.avg_efficiency_percent ?? efficiency;
+    const derivedProficiency = deriveProficiencyLevel(avgEfficiency);
 
     stepBreakdown.push({
-      stepId: step.stepId,
-      stepName: step.stepName,
-      category: step.category,
-      totalUnits: step.totalUnits,
-      totalMinutes: Math.round(step.totalMinutes),
+      stepId: entry.step_id,
+      stepName: entry.step_name,
+      category: entry.category ?? 'Other',
+      totalUnits: entry.total_units,
+      totalMinutes: Math.round(entry.total_minutes),
       averageEfficiency: Math.round(efficiency),
-      entryCount: step.entryCount,
-      currentProficiency: proficiency?.level ?? 3,
+      entryCount: entry.entry_count,
+      currentProficiency: derivedProficiency,
     });
+
+    totalMinutesWorked += entry.total_minutes;
+    totalUnits += entry.total_units;
+    totalExpectedMinutes += entry.expected_minutes ?? 0;
   }
 
   // Overall efficiency
-  const averageEfficiency = totalMinutesWorked > 0
+  const averageEfficiency = totalMinutesWorked > 0 && totalExpectedMinutes > 0
     ? (totalExpectedMinutes / totalMinutesWorked) * 100
     : 0;
 
@@ -181,220 +156,82 @@ export async function getWorkerProductivity(workerId: number): Promise<Productiv
   };
 }
 
-// Get worker productivity history (data points over time)
+// Get worker productivity history (data points over time) from production_history
 export async function getWorkerProductivityHistory(workerId: number, days: number = 30): Promise<ProductivityDataPoint[]> {
-  const entriesResult = await db.execute({
+  const result = await db.execute({
     sql: `
     SELECT
-      se.date,
-      se.actual_start_time,
-      se.actual_end_time,
-      se.actual_output,
-      ps.time_per_piece_seconds
-    FROM schedule_entries se
-    JOIN product_steps ps ON se.product_step_id = ps.id
-    WHERE se.worker_id = ?
-    AND se.status = 'completed'
-    AND se.actual_start_time IS NOT NULL
-    AND se.actual_end_time IS NOT NULL
-    AND se.date >= date('now', '-' || ? || ' days')
-    ORDER BY se.date
+      date,
+      SUM(units_produced) as units,
+      CASE
+        WHEN SUM(actual_seconds) > 0 THEN SUM(expected_seconds) * 100.0 / SUM(actual_seconds)
+        ELSE 0
+      END as efficiency
+    FROM production_history
+    WHERE worker_id = ?
+    AND date >= date('now', '-' || ? || ' days')
+    GROUP BY date
+    ORDER BY date
   `,
     args: [workerId, days]
   });
-  
-  const entries = entriesResult.rows as unknown as {
+
+  const rows = result.rows as unknown as {
     date: string;
-    actual_start_time: string;
-    actual_end_time: string;
-    actual_output: number;
-    time_per_piece_seconds: number;
+    units: number;
+    efficiency: number | null;
   }[];
 
-  // Group by date
-  const byDate: Record<string, { totalMinutes: number; expectedMinutes: number; units: number }> = {};
-
-  for (const entry of entries) {
-    const startTime = new Date(`2000-01-01T${entry.actual_start_time}`);
-    const endTime = new Date(`2000-01-01T${entry.actual_end_time}`);
-    const actualMinutes = (endTime.getTime() - startTime.getTime()) / 60000;
-    const expectedMinutes = (entry.actual_output * entry.time_per_piece_seconds) / 60;
-
-    if (!byDate[entry.date]) {
-      byDate[entry.date] = { totalMinutes: 0, expectedMinutes: 0, units: 0 };
-    }
-    byDate[entry.date]!.totalMinutes += actualMinutes;
-    byDate[entry.date]!.expectedMinutes += expectedMinutes;
-    byDate[entry.date]!.units += entry.actual_output;
-  }
-
-  return Object.entries(byDate).map(([date, data]) => ({
-    date,
-    efficiency: data.totalMinutes > 0 ? Math.round((data.expectedMinutes / data.totalMinutes) * 100) : 0,
-    unitsProduced: data.units,
+  return rows.map(row => ({
+    date: row.date,
+    efficiency: Math.round(row.efficiency ?? 0),
+    unitsProduced: row.units,
   }));
 }
 
-// Get proficiency change history for a worker
-export async function getWorkerProficiencyHistory(workerId: number): Promise<ProficiencyHistory[]> {
+// Get proficiency history for a worker - derived from production_history
+export async function getWorkerProficiencyHistory(workerId: number): Promise<ProficiencyHistoryEntry[]> {
   const result = await db.execute({
     sql: `
-    SELECT ph.*, ps.name as step_name, p.name as product_name
-    FROM proficiency_history ph
-    JOIN product_steps ps ON ph.product_step_id = ps.id
-    JOIN products p ON ps.product_id = p.id
-    WHERE ph.worker_id = ?
-    ORDER BY ph.created_at DESC
+    SELECT
+      date,
+      bom_step_id,
+      step_name,
+      fishbowl_bom_num as product_name,
+      efficiency_percent,
+      CASE
+        WHEN efficiency_percent >= 130 THEN 5
+        WHEN efficiency_percent >= 115 THEN 4
+        WHEN efficiency_percent >= 85 THEN 3
+        WHEN efficiency_percent >= 70 THEN 2
+        ELSE 1
+      END as derived_level
+    FROM production_history
+    WHERE worker_id = ?
+    AND efficiency_percent IS NOT NULL
+    ORDER BY date DESC
     LIMIT 50
   `,
     args: [workerId]
   });
-  return result.rows as unknown as (ProficiencyHistory & { step_name: string; product_name: string })[];
-}
 
-// Calculate automatic proficiency adjustments based on performance
-export async function calculateAutoAdjustments(): Promise<ProficiencyAdjustment[]> {
-  const adjustments: ProficiencyAdjustment[] = [];
+  const rows = result.rows as unknown as {
+    date: string;
+    bom_step_id: number;
+    step_name: string;
+    product_name: string;
+    efficiency_percent: number;
+    derived_level: number;
+  }[];
 
-  // Get all worker-step pairs with completed entries in the last 30 days
-  const pairsResult = await db.execute(`
-    SELECT DISTINCT worker_id, product_step_id
-    FROM schedule_entries
-    WHERE status = 'completed'
-    AND worker_id IS NOT NULL
-    AND actual_start_time IS NOT NULL
-    AND actual_end_time IS NOT NULL
-    AND date >= date('now', '-30 days')
-  `);
-  
-  const workerStepPairs = pairsResult.rows as unknown as { worker_id: number; product_step_id: number }[];
-
-  for (const pair of workerStepPairs) {
-    // Get recent entries for this worker-step pair
-    const entriesResult = await db.execute({
-      sql: `
-      SELECT
-        se.actual_start_time,
-        se.actual_end_time,
-        se.actual_output,
-        ps.time_per_piece_seconds
-      FROM schedule_entries se
-      JOIN product_steps ps ON se.product_step_id = ps.id
-      WHERE se.worker_id = ?
-      AND se.product_step_id = ?
-      AND se.status = 'completed'
-      AND se.actual_start_time IS NOT NULL
-      AND se.actual_end_time IS NOT NULL
-      AND se.date >= date('now', '-30 days')
-      ORDER BY se.date DESC
-      LIMIT 10
-    `,
-      args: [pair.worker_id, pair.product_step_id]
-    });
-    
-    const entries = entriesResult.rows as unknown as {
-      actual_start_time: string;
-      actual_end_time: string;
-      actual_output: number;
-      time_per_piece_seconds: number;
-    }[];
-
-    // Need at least 5 samples
-    if (entries.length < 5) continue;
-
-    // Calculate average efficiency
-    let totalEfficiency = 0;
-    for (const entry of entries) {
-      const startTime = new Date(`2000-01-01T${entry.actual_start_time}`);
-      const endTime = new Date(`2000-01-01T${entry.actual_end_time}`);
-      const actualMinutes = (endTime.getTime() - startTime.getTime()) / 60000;
-      const expectedMinutes = (entry.actual_output * entry.time_per_piece_seconds) / 60;
-
-      if (actualMinutes > 0) {
-        totalEfficiency += (expectedMinutes / actualMinutes) * 100;
-      }
-    }
-
-    const avgEfficiency = totalEfficiency / entries.length;
-
-    // Get current proficiency
-    const profResult = await db.execute({
-      sql: "SELECT level FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?",
-      args: [pair.worker_id, pair.product_step_id]
-    });
-    const currentProf = profResult.rows[0] as unknown as { level: number } | undefined;
-
-    const currentLevel = currentProf?.level ?? 3;
-
-    // Check if adjustment is needed
-    // Increase if consistently > 120% efficiency (working 20% faster than expected)
-    if (avgEfficiency > 120 && currentLevel < 5) {
-      adjustments.push({
-        workerId: pair.worker_id,
-        productStepId: pair.product_step_id,
-        currentLevel,
-        newLevel: Math.min(5, currentLevel + 1) as 1 | 2 | 3 | 4 | 5,
-        reason: 'auto_increase',
-        avgEfficiency: Math.round(avgEfficiency),
-        sampleSize: entries.length,
-      });
-    }
-    // Decrease if consistently < 80% efficiency (working 20% slower than expected)
-    else if (avgEfficiency < 80 && currentLevel > 1) {
-      adjustments.push({
-        workerId: pair.worker_id,
-        productStepId: pair.product_step_id,
-        currentLevel,
-        newLevel: Math.max(1, currentLevel - 1) as 1 | 2 | 3 | 4 | 5,
-        reason: 'auto_decrease',
-        avgEfficiency: Math.round(avgEfficiency),
-        sampleSize: entries.length,
-      });
-    }
-  }
-
-  return adjustments;
-}
-
-// Apply a proficiency adjustment
-export async function applyProficiencyAdjustment(adjustment: ProficiencyAdjustment): Promise<void> {
-  // Check if proficiency record exists
-  const existingResult = await db.execute({
-    sql: "SELECT id FROM worker_proficiencies WHERE worker_id = ? AND product_step_id = ?",
-    args: [adjustment.workerId, adjustment.productStepId]
-  });
-  const existing = existingResult.rows[0] as unknown as { id: number } | undefined;
-
-  if (existing) {
-    await db.execute({
-      sql: "UPDATE worker_proficiencies SET level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      args: [adjustment.newLevel, existing.id]
-    });
-  } else {
-    await db.execute({
-      sql: "INSERT INTO worker_proficiencies (worker_id, product_step_id, level) VALUES (?, ?, ?)",
-      args: [adjustment.workerId, adjustment.productStepId, adjustment.newLevel]
-    });
-  }
-
-  // Record in history
-  const triggerData = JSON.stringify({
-    avgEfficiency: adjustment.avgEfficiency,
-    sampleSize: adjustment.sampleSize,
-  });
-
-  await db.execute({
-    sql: `INSERT INTO proficiency_history (worker_id, product_step_id, old_level, new_level, reason, trigger_data)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    args: [
-      adjustment.workerId,
-      adjustment.productStepId,
-      adjustment.currentLevel,
-      adjustment.newLevel,
-      adjustment.reason,
-      triggerData,
-    ]
-  });
+  return rows.map(row => ({
+    date: row.date,
+    bomStepId: row.bom_step_id,
+    stepName: row.step_name,
+    productName: row.product_name,
+    efficiencyPercent: row.efficiency_percent,
+    derivedLevel: row.derived_level,
+  }));
 }
 
 // Assignment Analytics Interfaces
@@ -407,11 +244,11 @@ export interface AssignmentOutputHistoryEntry {
 export interface AssignmentTimeMetrics {
   assignmentId: number;
   totalUpdates: number;
-  beginningAvgTimePerPiece: number | null; // seconds per piece (first 25% of updates)
-  middleAvgTimePerPiece: number | null; // seconds per piece (middle 50% of updates)
-  endAvgTimePerPiece: number | null; // seconds per piece (last 25% of updates)
-  overallAvgTimePerPiece: number | null; // seconds per piece (all updates)
-  speedupPercentage: number | null; // how much faster at end vs beginning (%)
+  beginningAvgTimePerPiece: number | null;
+  middleAvgTimePerPiece: number | null;
+  endAvgTimePerPiece: number | null;
+  overallAvgTimePerPiece: number | null;
+  speedupPercentage: number | null;
   currentOutput: number;
   startTime: string | null;
   endTime: string | null;
@@ -420,7 +257,7 @@ export interface AssignmentTimeMetrics {
 
 export interface AssignmentAnalytics {
   assignmentId: number;
-  scheduleEntryId: number;
+  planTaskId: number;
   workerId: number;
   workerName: string;
   stepName: string;
@@ -435,43 +272,34 @@ export interface AssignmentAnalytics {
   timeMetrics: AssignmentTimeMetrics | null;
 }
 
-// Get assignment output history
-export async function getAssignmentOutputHistory(assignmentId: number): Promise<AssignmentOutputHistoryEntry[]> {
-  const result = await db.execute({
-    sql: `
-    SELECT 
-      aoh.id,
-      aoh.output,
-      aoh.recorded_at
-    FROM assignment_output_history aoh
-    WHERE aoh.assignment_id = ?
-    ORDER BY aoh.recorded_at ASC
-  `,
-    args: [assignmentId]
-  });
-  return result.rows as unknown as AssignmentOutputHistoryEntry[];
+// Get assignment output history - returns empty (no assignment_output_history table)
+export async function getAssignmentOutputHistory(_assignmentId: number): Promise<AssignmentOutputHistoryEntry[]> {
+  // assignment_output_history table no longer exists
+  // Return empty array - speedup tracking not yet implemented
+  return [];
 }
 
 // Calculate time-per-piece metrics for an assignment
+// Returns null metrics gracefully since we don't have granular output history
 export async function getAssignmentTimeMetrics(assignmentId: number): Promise<AssignmentTimeMetrics | null> {
-  // Get assignment info
+  // Get assignment info from task_assignments + plan_tasks + bom_steps
   const assignmentResult = await db.execute({
     sql: `
-    SELECT 
-      twa.id,
-      twa.actual_start_time,
-      twa.actual_end_time,
-      twa.actual_output,
-      twa.status,
-      ps.time_per_piece_seconds
-    FROM task_worker_assignments twa
-    JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-    JOIN product_steps ps ON se.product_step_id = ps.id
-    WHERE twa.id = ?
+    SELECT
+      ta.id,
+      ta.actual_start_time,
+      ta.actual_end_time,
+      ta.actual_output,
+      ta.status,
+      bs.time_per_piece_seconds
+    FROM task_assignments ta
+    JOIN plan_tasks pt ON ta.plan_task_id = pt.id
+    JOIN bom_steps bs ON pt.bom_step_id = bs.id
+    WHERE ta.id = ?
   `,
     args: [assignmentId]
   });
-  
+
   const assignment = assignmentResult.rows[0] as unknown as {
     id: number;
     actual_start_time: string | null;
@@ -483,99 +311,15 @@ export async function getAssignmentTimeMetrics(assignmentId: number): Promise<As
 
   if (!assignment) return null;
 
-  // Get output history
-  const history = await getAssignmentOutputHistory(assignmentId);
-  
-  if (history.length < 2) {
-    // Not enough data for metrics
-    return {
-      assignmentId,
-      totalUpdates: history.length,
-      beginningAvgTimePerPiece: null,
-      middleAvgTimePerPiece: null,
-      endAvgTimePerPiece: null,
-      overallAvgTimePerPiece: null,
-      speedupPercentage: null,
-      currentOutput: assignment.actual_output,
-      startTime: assignment.actual_start_time,
-      endTime: assignment.actual_end_time,
-      status: assignment.status,
-    };
-  }
-
-  // Calculate time per piece for each interval
-  const timePerPieceIntervals: number[] = [];
-  
-  for (let i = 1; i < history.length; i++) {
-    const prev = history[i - 1]!;
-    const curr = history[i]!;
-
-    const prevTime = new Date(prev.recorded_at).getTime();
-    const currTime = new Date(curr.recorded_at).getTime();
-    const timeDiffSeconds = (currTime - prevTime) / 1000;
-    const outputDiff = curr.output - prev.output;
-    
-    if (outputDiff > 0 && timeDiffSeconds > 0) {
-      const timePerPiece = timeDiffSeconds / outputDiff;
-      timePerPieceIntervals.push(timePerPiece);
-    }
-  }
-
-  if (timePerPieceIntervals.length === 0) {
-    return {
-      assignmentId,
-      totalUpdates: history.length,
-      beginningAvgTimePerPiece: null,
-      middleAvgTimePerPiece: null,
-      endAvgTimePerPiece: null,
-      overallAvgTimePerPiece: null,
-      speedupPercentage: null,
-      currentOutput: assignment.actual_output,
-      startTime: assignment.actual_start_time,
-      endTime: assignment.actual_end_time,
-      status: assignment.status,
-    };
-  }
-
-  // Calculate stage averages
-  const totalIntervals = timePerPieceIntervals.length;
-  const beginningCount = Math.max(1, Math.floor(totalIntervals * 0.25));
-  const middleStart = beginningCount;
-  const middleCount = Math.max(1, Math.floor(totalIntervals * 0.5));
-  const endStart = middleStart + middleCount;
-  const endCount = totalIntervals - endStart;
-
-  const beginningIntervals = timePerPieceIntervals.slice(0, beginningCount);
-  const middleIntervals = timePerPieceIntervals.slice(middleStart, middleStart + middleCount);
-  const endIntervals = timePerPieceIntervals.slice(endStart);
-
-  const beginningAvg = beginningIntervals.length > 0
-    ? beginningIntervals.reduce((a, b) => a + b, 0) / beginningIntervals.length
-    : null;
-  
-  const middleAvg = middleIntervals.length > 0
-    ? middleIntervals.reduce((a, b) => a + b, 0) / middleIntervals.length
-    : null;
-  
-  const endAvg = endIntervals.length > 0
-    ? endIntervals.reduce((a, b) => a + b, 0) / endIntervals.length
-    : null;
-  
-  const overallAvg = timePerPieceIntervals.reduce((a, b) => a + b, 0) / timePerPieceIntervals.length;
-
-  // Calculate speedup percentage (how much faster at end vs beginning)
-  const speedupPercentage = (beginningAvg !== null && endAvg !== null && beginningAvg > 0)
-    ? ((beginningAvg - endAvg) / beginningAvg) * 100
-    : null;
-
+  // No granular output history available, return null metrics
   return {
     assignmentId,
-    totalUpdates: history.length,
-    beginningAvgTimePerPiece: beginningAvg ? Math.round(beginningAvg * 10) / 10 : null,
-    middleAvgTimePerPiece: middleAvg ? Math.round(middleAvg * 10) / 10 : null,
-    endAvgTimePerPiece: endAvg ? Math.round(endAvg * 10) / 10 : null,
-    overallAvgTimePerPiece: Math.round(overallAvg * 10) / 10,
-    speedupPercentage: speedupPercentage ? Math.round(speedupPercentage * 10) / 10 : null,
+    totalUpdates: 0,
+    beginningAvgTimePerPiece: null,
+    middleAvgTimePerPiece: null,
+    endAvgTimePerPiece: null,
+    overallAvgTimePerPiece: null,
+    speedupPercentage: null,
     currentOutput: assignment.actual_output,
     startTime: assignment.actual_start_time,
     endTime: assignment.actual_end_time,
@@ -583,35 +327,36 @@ export async function getAssignmentTimeMetrics(assignmentId: number): Promise<As
   };
 }
 
-// Get single assignment analytics
+// Get single assignment analytics using task_assignments + plan_tasks + bom_steps
 export async function getAssignmentAnalytics(assignmentId: number): Promise<AssignmentAnalytics | null> {
   const assignmentResult = await db.execute({
     sql: `
-    SELECT 
-      twa.id as assignment_id,
-      twa.schedule_entry_id,
-      twa.worker_id,
-      twa.actual_start_time,
-      twa.actual_end_time,
-      twa.actual_output,
-      twa.status,
+    SELECT
+      ta.id as assignment_id,
+      ta.plan_task_id,
+      ta.worker_id,
+      ta.actual_start_time,
+      ta.actual_end_time,
+      ta.actual_output,
+      ta.status,
       w.name as worker_name,
-      ps.name as step_name,
-      ps.category,
-      ps.time_per_piece_seconds,
-      se.planned_output
-    FROM task_worker_assignments twa
-    JOIN workers w ON twa.worker_id = w.id
-    JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-    JOIN product_steps ps ON se.product_step_id = ps.id
-    WHERE twa.id = ?
+      bs.name as step_name,
+      wc.name as category,
+      bs.time_per_piece_seconds,
+      pt.planned_output
+    FROM task_assignments ta
+    JOIN workers w ON ta.worker_id = w.id
+    JOIN plan_tasks pt ON ta.plan_task_id = pt.id
+    JOIN bom_steps bs ON pt.bom_step_id = bs.id
+    LEFT JOIN work_categories wc ON bs.work_category_id = wc.id
+    WHERE ta.id = ?
   `,
     args: [assignmentId]
   });
-  
+
   const assignment = assignmentResult.rows[0] as unknown as {
     assignment_id: number;
-    schedule_entry_id: number;
+    plan_task_id: number;
     worker_id: number;
     actual_start_time: string | null;
     actual_end_time: string | null;
@@ -619,7 +364,7 @@ export async function getAssignmentAnalytics(assignmentId: number): Promise<Assi
     status: string;
     worker_name: string;
     step_name: string;
-    category: string;
+    category: string | null;
     time_per_piece_seconds: number;
     planned_output: number;
   } | undefined;
@@ -631,11 +376,11 @@ export async function getAssignmentAnalytics(assignmentId: number): Promise<Assi
 
   return {
     assignmentId: assignment.assignment_id,
-    scheduleEntryId: assignment.schedule_entry_id,
+    planTaskId: assignment.plan_task_id,
     workerId: assignment.worker_id,
     workerName: assignment.worker_name,
     stepName: assignment.step_name,
-    category: assignment.category,
+    category: assignment.category ?? 'Other',
     timePerPieceSeconds: assignment.time_per_piece_seconds,
     plannedOutput: assignment.planned_output,
     currentOutput: assignment.actual_output,
@@ -647,38 +392,39 @@ export async function getAssignmentAnalytics(assignmentId: number): Promise<Assi
   };
 }
 
-// Get all assignment analytics for a worker
+// Get all assignment analytics for a worker using task_assignments + plan_tasks + bom_steps
 export async function getWorkerAssignmentAnalytics(workerId: number): Promise<AssignmentAnalytics[]> {
   const assignmentsResult = await db.execute({
     sql: `
-    SELECT 
-      twa.id as assignment_id,
-      twa.schedule_entry_id,
-      twa.worker_id,
-      twa.actual_start_time,
-      twa.actual_end_time,
-      twa.actual_output,
-      twa.status,
+    SELECT
+      ta.id as assignment_id,
+      ta.plan_task_id,
+      ta.worker_id,
+      ta.actual_start_time,
+      ta.actual_end_time,
+      ta.actual_output,
+      ta.status,
       w.name as worker_name,
-      ps.name as step_name,
-      ps.category,
-      ps.time_per_piece_seconds,
-      se.planned_output
-    FROM task_worker_assignments twa
-    JOIN workers w ON twa.worker_id = w.id
-    JOIN schedule_entries se ON twa.schedule_entry_id = se.id
-    JOIN product_steps ps ON se.product_step_id = ps.id
-    WHERE twa.worker_id = ?
-    AND twa.status IN ('in_progress', 'completed')
-    ORDER BY twa.assigned_at DESC
+      bs.name as step_name,
+      wc.name as category,
+      bs.time_per_piece_seconds,
+      pt.planned_output
+    FROM task_assignments ta
+    JOIN workers w ON ta.worker_id = w.id
+    JOIN plan_tasks pt ON ta.plan_task_id = pt.id
+    JOIN bom_steps bs ON pt.bom_step_id = bs.id
+    LEFT JOIN work_categories wc ON bs.work_category_id = wc.id
+    WHERE ta.worker_id = ?
+    AND ta.status IN ('in_progress', 'completed')
+    ORDER BY ta.assigned_at DESC
     LIMIT 50
   `,
     args: [workerId]
   });
-  
+
   const assignments = assignmentsResult.rows as unknown as {
     assignment_id: number;
-    schedule_entry_id: number;
+    plan_task_id: number;
     worker_id: number;
     actual_start_time: string | null;
     actual_end_time: string | null;
@@ -686,24 +432,24 @@ export async function getWorkerAssignmentAnalytics(workerId: number): Promise<As
     status: string;
     worker_name: string;
     step_name: string;
-    category: string;
+    category: string | null;
     time_per_piece_seconds: number;
     planned_output: number;
   }[];
 
   const results: AssignmentAnalytics[] = [];
-  
+
   for (const assignment of assignments) {
     const outputHistory = await getAssignmentOutputHistory(assignment.assignment_id);
     const timeMetrics = await getAssignmentTimeMetrics(assignment.assignment_id);
 
     results.push({
       assignmentId: assignment.assignment_id,
-      scheduleEntryId: assignment.schedule_entry_id,
+      planTaskId: assignment.plan_task_id,
       workerId: assignment.worker_id,
       workerName: assignment.worker_name,
       stepName: assignment.step_name,
-      category: assignment.category,
+      category: assignment.category ?? 'Other',
       timePerPieceSeconds: assignment.time_per_piece_seconds,
       plannedOutput: assignment.planned_output,
       currentOutput: assignment.actual_output,
@@ -714,176 +460,108 @@ export async function getWorkerAssignmentAnalytics(workerId: number): Promise<As
       timeMetrics,
     });
   }
-  
+
   return results;
 }
 
-// Build Version Analytics
-export interface BuildVersionMetricsSummary {
-  buildVersionId: number;
-  versionName: string;
-  productName: string;
-  totalUnitsProduced: number;
-  totalTimeSeconds: number;
-  avgTimePerUnitSeconds: number | null;
-  totalCost: number;
-  sampleCount: number;
-  orderCount: number;
+// Get derived proficiency level for a worker-step combination
+// Uses worker_step_performance.avg_efficiency_percent
+export async function getWorkerStepProficiency(workerId: number, bomStepId: number): Promise<number> {
+  const result = await db.execute({
+    sql: "SELECT avg_efficiency_percent FROM worker_step_performance WHERE worker_id = ? AND bom_step_id = ?",
+    args: [workerId, bomStepId]
+  });
+
+  const perf = result.rows[0] as unknown as { avg_efficiency_percent: number | null } | undefined;
+
+  if (!perf || perf.avg_efficiency_percent === null) {
+    return 3; // Default to proficient level
+  }
+
+  return deriveProficiencyLevel(perf.avg_efficiency_percent);
 }
 
-// Get metrics for a build version
-// Note: Version is now tracked on schedules, not orders
-export async function getBuildVersionMetrics(buildVersionId: number): Promise<BuildVersionMetricsSummary | null> {
-  // Get build version info
-  const versionResult = await db.execute({
-    sql: `
-    SELECT bv.id, bv.version_name, p.name as product_name
-    FROM product_build_versions bv
-    JOIN products p ON bv.product_id = p.id
-    WHERE bv.id = ?
-  `,
-    args: [buildVersionId]
-  });
-  const version = versionResult.rows[0] as unknown as {
-    id: number;
-    version_name: string;
-    product_name: string;
-  } | undefined;
-
-  if (!version) return null;
-
-  // Get schedules (and their orders) using this build version
-  const schedulesResult = await db.execute({
-    sql: `
-    SELECT DISTINCT s.order_id, o.quantity
-    FROM schedules s
-    JOIN orders o ON s.order_id = o.id
-    WHERE s.build_version_id = ?
-  `,
-    args: [buildVersionId]
-  });
-  const orders = schedulesResult.rows as unknown as { order_id: number; quantity: number }[];
-
-  // Calculate total units produced from completed schedule entries
+// Update worker_step_performance aggregates from production_history
+export async function updateWorkerStepPerformance(workerId: number, bomStepId: number): Promise<void> {
+  // Get aggregated metrics from production_history
   const metricsResult = await db.execute({
     sql: `
     SELECT
-      SUM(twa.actual_output) as total_units,
-      COUNT(DISTINCT se.id) as sample_count
-    FROM schedules s
-    JOIN schedule_entries se ON se.schedule_id = s.id
-    JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-    WHERE s.build_version_id = ?
-    AND twa.status = 'completed'
+      SUM(units_produced) as total_units,
+      SUM(actual_seconds) as total_actual,
+      SUM(expected_seconds) as total_expected,
+      COUNT(*) as sample_count,
+      AVG(efficiency_percent) as avg_efficiency
+    FROM production_history
+    WHERE worker_id = ? AND bom_step_id = ?
   `,
-    args: [buildVersionId]
+    args: [workerId, bomStepId]
   });
+
   const metrics = metricsResult.rows[0] as unknown as {
     total_units: number | null;
+    total_actual: number | null;
+    total_expected: number | null;
     sample_count: number;
+    avg_efficiency: number | null;
   };
 
-  // Calculate total time from actual work times
-  const timeResult = await db.execute({
+  if (!metrics || metrics.sample_count === 0) return;
+
+  // Get recent efficiency (last 10 entries) for trend calculation
+  const recentResult = await db.execute({
     sql: `
-    SELECT
-      SUM(
-        CASE
-          WHEN twa.actual_start_time IS NOT NULL AND twa.actual_end_time IS NOT NULL
-          THEN (julianday(twa.actual_end_time) - julianday(twa.actual_start_time)) * 86400
-          ELSE 0
-        END
-      ) as total_seconds
-    FROM schedules s
-    JOIN schedule_entries se ON se.schedule_id = s.id
-    JOIN task_worker_assignments twa ON twa.schedule_entry_id = se.id
-    WHERE s.build_version_id = ?
-    AND twa.status = 'completed'
+    SELECT AVG(efficiency_percent) as recent_efficiency
+    FROM (
+      SELECT efficiency_percent
+      FROM production_history
+      WHERE worker_id = ? AND bom_step_id = ?
+      ORDER BY date DESC, recorded_at DESC
+      LIMIT 10
+    )
   `,
-    args: [buildVersionId]
-  });
-  const timeMetrics = timeResult.rows[0] as unknown as { total_seconds: number | null };
-
-  const totalUnits = metrics.total_units || 0;
-  const totalSeconds = Math.round(timeMetrics.total_seconds || 0);
-  const avgTimePerUnit = totalUnits > 0 ? totalSeconds / totalUnits : null;
-
-  return {
-    buildVersionId: version.id,
-    versionName: version.version_name,
-    productName: version.product_name,
-    totalUnitsProduced: totalUnits,
-    totalTimeSeconds: totalSeconds,
-    avgTimePerUnitSeconds: avgTimePerUnit ? Math.round(avgTimePerUnit * 10) / 10 : null,
-    totalCost: 0, // TODO: Calculate from cost data
-    sampleCount: metrics.sample_count || 0,
-    orderCount: orders.length,
-  };
-}
-
-// Compare metrics between build versions
-export async function compareBuildVersionMetrics(
-  versionIds: number[]
-): Promise<BuildVersionMetricsSummary[]> {
-  const results: BuildVersionMetricsSummary[] = [];
-
-  for (const versionId of versionIds) {
-    const metrics = await getBuildVersionMetrics(versionId);
-    if (metrics) {
-      results.push(metrics);
-    }
-  }
-
-  return results;
-}
-
-// Update aggregated metrics in build_version_metrics table
-export async function updateBuildVersionAggregatedMetrics(buildVersionId: number): Promise<void> {
-  const metrics = await getBuildVersionMetrics(buildVersionId);
-  if (!metrics) return;
-
-  // Check if record exists
-  const existingResult = await db.execute({
-    sql: "SELECT id FROM build_version_metrics WHERE build_version_id = ?",
-    args: [buildVersionId]
+    args: [workerId, bomStepId]
   });
 
-  if (existingResult.rows.length > 0) {
-    await db.execute({
-      sql: `
-      UPDATE build_version_metrics
-      SET total_units_produced = ?,
-          total_time_seconds = ?,
-          avg_time_per_unit_seconds = ?,
-          total_cost = ?,
-          sample_count = ?,
-          last_updated = CURRENT_TIMESTAMP
-      WHERE build_version_id = ?
-    `,
-      args: [
-        metrics.totalUnitsProduced,
-        metrics.totalTimeSeconds,
-        metrics.avgTimePerUnitSeconds,
-        metrics.totalCost,
-        metrics.sampleCount,
-        buildVersionId,
-      ]
-    });
-  } else {
-    await db.execute({
-      sql: `
-      INSERT INTO build_version_metrics
-        (build_version_id, total_units_produced, total_time_seconds, avg_time_per_unit_seconds, total_cost, sample_count)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `,
-      args: [
-        buildVersionId,
-        metrics.totalUnitsProduced,
-        metrics.totalTimeSeconds,
-        metrics.avgTimePerUnitSeconds,
-        metrics.totalCost,
-        metrics.sampleCount,
-      ]
-    });
+  const recent = recentResult.rows[0] as unknown as { recent_efficiency: number | null };
+
+  // Determine trend
+  let trend: 'improving' | 'stable' | 'declining' | null = null;
+  if (metrics.avg_efficiency !== null && recent?.recent_efficiency !== null) {
+    const diff = recent.recent_efficiency - metrics.avg_efficiency;
+    if (diff > 5) trend = 'improving';
+    else if (diff < -5) trend = 'declining';
+    else trend = 'stable';
   }
+
+  // Upsert worker_step_performance
+  await db.execute({
+    sql: `
+    INSERT INTO worker_step_performance (
+      worker_id, bom_step_id, total_units_produced, total_actual_seconds,
+      total_expected_seconds, avg_efficiency_percent, sample_count,
+      recent_efficiency_percent, trend, last_updated
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT (worker_id, bom_step_id) DO UPDATE SET
+      total_units_produced = excluded.total_units_produced,
+      total_actual_seconds = excluded.total_actual_seconds,
+      total_expected_seconds = excluded.total_expected_seconds,
+      avg_efficiency_percent = excluded.avg_efficiency_percent,
+      sample_count = excluded.sample_count,
+      recent_efficiency_percent = excluded.recent_efficiency_percent,
+      trend = excluded.trend,
+      last_updated = CURRENT_TIMESTAMP
+  `,
+    args: [
+      workerId,
+      bomStepId,
+      metrics.total_units ?? 0,
+      metrics.total_actual ?? 0,
+      metrics.total_expected ?? 0,
+      metrics.avg_efficiency,
+      metrics.sample_count,
+      recent?.recent_efficiency ?? null,
+      trend,
+    ]
+  });
 }

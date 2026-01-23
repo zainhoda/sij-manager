@@ -364,7 +364,10 @@ async function handleWorkerStats(workerId: number, days: number = 30): Promise<R
       SELECT
         ph.bom_step_id as step_id,
         ph.step_name,
-        bs.time_per_piece_seconds as estimated_seconds,
+        COALESCE(
+          bs.time_per_piece_seconds,
+          CASE WHEN SUM(ph.units_produced) > 0 THEN SUM(ph.expected_seconds) / SUM(ph.units_produced) ELSE NULL END
+        ) as estimated_seconds,
         ph.fishbowl_bom_num as product_name,
         COUNT(*) as times_performed,
         SUM(ph.units_produced) as total_output,

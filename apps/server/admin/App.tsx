@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { Router, Route, Switch, Link, useLocation } from "wouter";
 import {
@@ -19,6 +19,7 @@ import {
   Layers,
   Play,
   ListTodo,
+  Grid3X3,
 } from "lucide-react";
 import "./index.css";
 
@@ -44,6 +45,8 @@ import PlanningRuns from "./pages/PlanningRuns";
 import PlanningRunDetail from "./pages/PlanningRunDetail";
 import ActivePlan from "./pages/ActivePlan";
 import BOMSteps from "./pages/BOMSteps";
+import OrderDetail from "./pages/OrderDetail";
+import ProficiencyMatrix from "./pages/ProficiencyMatrix";
 
 interface NavItemProps {
   href: string;
@@ -80,6 +83,25 @@ function NavGroup({ title, children }: NavGroupProps) {
   );
 }
 
+function DemoModeBadge() {
+  const [isDemoMode, setIsDemoMode] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    fetch("/api/config")
+      .then((res) => res.json())
+      .then((data) => setIsDemoMode(data.isDemoMode))
+      .catch(() => setIsDemoMode(null));
+  }, []);
+
+  if (!isDemoMode) return null;
+
+  return (
+    <div className="demo-mode-badge">
+      DEMO MODE
+    </div>
+  );
+}
+
 function Sidebar() {
   return (
     <aside className="sidebar">
@@ -112,6 +134,7 @@ function Sidebar() {
         <NavGroup title="Setup">
           <NavItem href="/bom-steps" icon={<Package size={18} />} label="BOM Steps" />
           <NavItem href="/workers" icon={<Users size={18} />} label="Workers" />
+          <NavItem href="/proficiency-matrix" icon={<Grid3X3 size={18} />} label="Proficiency Matrix" />
           <NavItem href="/certifications" icon={<Award size={18} />} label="Certifications" />
           <NavItem href="/equipment" icon={<Wrench size={18} />} label="Equipment" />
         </NavGroup>
@@ -135,6 +158,7 @@ function App() {
     <Router base="/admin">
       <div className="app-layout">
         <Sidebar />
+        <DemoModeBadge />
         <main className="main-content">
           <Switch>
             <Route path="/" component={Dashboard} />
@@ -154,10 +178,12 @@ function App() {
             <Route path="/import-production" component={ImportProductionData} />
             <Route path="/workers/:id" component={WorkerDetail} />
             <Route path="/workers" component={Workers} />
+            <Route path="/proficiency-matrix" component={ProficiencyMatrix} />
             <Route path="/certifications" component={CertificationMatrix} />
             <Route path="/equipment" component={Equipment} />
             <Route path="/production-summary" component={ProductionSummary} />
             <Route path="/recent-activity" component={RecentActivity} />
+            <Route path="/orders/:id/detail" component={OrderDetail} />
             <Route>
               <div className="page">
                 <h1>404 - Not Found</h1>

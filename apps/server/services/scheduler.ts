@@ -1,6 +1,6 @@
 import { db } from "../db";
 import type { Order, ProductStep, Schedule, ScheduleEntry, Worker, TaskWorkerAssignment } from "../db/schema";
-import { getWorkerProficiencyLevel, PROFICIENCY_MULTIPLIERS } from "../routes/proficiencies";
+import { PROFICIENCY_MULTIPLIERS, getWorkerStepProficiency } from "./analytics";
 import { getBuildVersionSteps, getDefaultBuildVersion } from "./build-version-manager";
 
 // Work day configuration
@@ -158,7 +158,7 @@ export async function findQualifiedWorkers(
     const totalWorkload = legacyWorkload.count + newWorkload.count;
 
     // Get proficiency level for this worker-step combination
-    const proficiencyLevel = await getWorkerProficiencyLevel(worker.id, step.id);
+    const proficiencyLevel = await getWorkerStepProficiency(worker.id, step.id);
 
     // Score: higher proficiency is better, lower workload is better
     // Proficiency weight: 10 points per level (so level 5 = 50, level 1 = 10)

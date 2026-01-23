@@ -190,16 +190,25 @@ async function handlePlanPreview(orderId: number, request: Request): Promise<Res
     cost_per_hour: number;
   }[];
 
-  // Get worker proficiencies for all steps
+  // Get worker proficiencies for all steps (derived from worker_step_performance)
   const stepIds = steps.map(s => s.id);
-  const proficienciesResult = await db.execute({
+  const proficienciesResult = stepIds.length > 0 ? await db.execute({
     sql: `
-      SELECT worker_id, product_step_id, level
-      FROM worker_proficiencies
-      WHERE product_step_id IN (${stepIds.map(() => "?").join(",")})
+      SELECT
+        worker_id,
+        bom_step_id as product_step_id,
+        CASE
+          WHEN avg_efficiency_percent >= 130 THEN 5
+          WHEN avg_efficiency_percent >= 115 THEN 4
+          WHEN avg_efficiency_percent >= 85 THEN 3
+          WHEN avg_efficiency_percent >= 70 THEN 2
+          ELSE 1
+        END as level
+      FROM worker_step_performance
+      WHERE bom_step_id IN (${stepIds.map(() => "?").join(",")})
     `,
     args: stepIds
-  });
+  }) : { rows: [] };
   const proficiencies = proficienciesResult.rows as unknown as {
     worker_id: number;
     product_step_id: number;

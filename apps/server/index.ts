@@ -9,6 +9,7 @@ import { handleBOMSteps } from "./routes/bom-steps";
 import { handleEquipment } from "./routes/equipment";
 import { handleWorkers } from "./routes/workers";
 import { handleCertifications } from "./routes/certifications";
+import { handleProficiencies } from "./routes/proficiencies";
 import { handleWorkCategories } from "./routes/work-categories";
 import { handleDashboard } from "./routes/dashboard";
 import { handleImports } from "./routes/imports";
@@ -20,6 +21,7 @@ import adminHtml from "./admin/index.html";
 
 // Initialize database (this also seeds it)
 import "./db";
+import { isDemoMode } from "./db";
 
 // CORS headers for development
 const corsHeaders = {
@@ -126,6 +128,11 @@ const server = Bun.serve({
         return addCorsHeaders(response);
       }
 
+      response = await handleProficiencies(request);
+      if (response) {
+        return addCorsHeaders(response);
+      }
+
       response = await handleImports(request);
       if (response) {
         return addCorsHeaders(response);
@@ -144,6 +151,13 @@ const server = Bun.serve({
       response = await handleProductionSummary(request);
       if (response) {
         return addCorsHeaders(response);
+      }
+
+      // App config endpoint
+      if (url.pathname === "/api/config") {
+        return Response.json({
+          isDemoMode: isDemoMode(),
+        }, { headers: corsHeaders });
       }
 
       return new Response("Not Found", { status: 404, headers: corsHeaders });
