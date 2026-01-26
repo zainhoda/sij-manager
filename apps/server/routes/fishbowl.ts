@@ -19,6 +19,8 @@ import {
   getFishbowlWO,
   getFishbowlWOByNum,
   getOrderChain,
+  getOnHandForBOM,
+  clearInventoryCache,
 } from "../services/fishbowl";
 
 export async function handleFishbowl(request: Request): Promise<Response | null> {
@@ -108,6 +110,24 @@ export async function handleFishbowl(request: Request): Promise<Response | null>
     const bomId = parseInt(bomInstructionsMatch[1]!);
     const instructions = await getBOMInstructions(bomId);
     return Response.json({ instructions });
+  }
+
+  // GET /api/fishbowl/boms/:bomNum/inventory - Get on-hand inventory for a BOM
+  const bomInventoryMatch = url.pathname.match(/^\/api\/fishbowl\/boms\/([^/]+)\/inventory$/);
+  if (bomInventoryMatch && request.method === "GET") {
+    const bomNum = decodeURIComponent(bomInventoryMatch[1]!);
+    const inventory = await getOnHandForBOM(bomNum);
+    return Response.json({
+      bomNum,
+      onHandQty: inventory.onHandQty,
+      cartonQty: inventory.cartonQty,
+    });
+  }
+
+  // POST /api/fishbowl/inventory/refresh - Clear inventory cache
+  if (url.pathname === "/api/fishbowl/inventory/refresh" && request.method === "POST") {
+    clearInventoryCache();
+    return Response.json({ success: true, message: "Inventory cache cleared" });
   }
 
   // ============== Sales Order Routes ==============

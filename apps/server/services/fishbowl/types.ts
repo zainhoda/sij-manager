@@ -284,3 +284,10 @@ export interface OrderChain {
   moItems: FishbowlMOItem[];
   wos: FishbowlWO[];
 }
+
+// Inventory - note: InventoryInfo is exported from inventory-service.ts
+export interface BOMInventory {
+  bomNum: string;
+  onHandQty: number;
+  cartonQty: number;
+}

@@ -37,6 +37,7 @@ export async function handleDemand(request: Request): Promise<Response | null> {
     const offset = url.searchParams.get("offset");
     const orderBy = url.searchParams.get("order_by") as "due_date" | "priority" | "created_at" | undefined;
     const orderDir = url.searchParams.get("order_dir") as "asc" | "desc" | undefined;
+    const includeInventory = url.searchParams.get("include_inventory") === "true";
 
     const { entries, total } = await getDemandEntries(db, {
       status: status ? (status.split(",") as any[]) : undefined,
@@ -49,6 +50,7 @@ export async function handleDemand(request: Request): Promise<Response | null> {
       offset: offset ? parseInt(offset) : undefined,
       order_by: orderBy,
       order_dir: orderDir,
+      include_inventory: includeInventory,
     });
 
     return Response.json({ entries, total });

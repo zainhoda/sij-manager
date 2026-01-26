@@ -5,6 +5,7 @@
 
 import type { Client } from "@libsql/client";
 import type { DemandEntry } from "../../db/schema";
+import { getInventoryForBOMs } from "../fishbowl/inventory-service";
 
 export interface CreateDemandInput {
   source: "fishbowl_so" | "fishbowl_wo" | "manual";
@@ -54,12 +55,16 @@ export interface DemandQueryOptions {
   offset?: number;
   order_by?: "due_date" | "priority" | "created_at";
   order_dir?: "asc" | "desc";
+  include_inventory?: boolean;
 }
 
 export interface DemandWithBOMInfo extends DemandEntry {
   bom_description?: string;
   total_steps?: number;
   total_time_seconds?: number;
+  on_hand_qty?: number;
+  to_produce_qty?: number;
+  carton_qty?: number;
 }
 
 /**
@@ -151,8 +156,28 @@ export async function getDemandEntries(
     args: params,
   });
 
+  let entries = result.rows as unknown as DemandWithBOMInfo[];
+
+  // Optionally fetch and attach inventory data
+  if (options.include_inventory && entries.length > 0) {
+    const bomNums = [...new Set(entries.map((e) => e.fishbowl_bom_num))];
+    const inventoryMap = await getInventoryForBOMs(bomNums);
+
+    entries = entries.map((entry) => {
+      const inventory = inventoryMap.get(entry.fishbowl_bom_num);
+      const onHand = inventory?.onHandQty ?? 0;
+      const cartonQty = inventory?.cartonQty ?? 1;
+      return {
+        ...entry,
+        on_hand_qty: onHand,
+        to_produce_qty: Math.max(0, entry.quantity - onHand),
+        carton_qty: cartonQty,
+      };
+    });
+  }
+
   return {
-    entries: result.rows as unknown as DemandWithBOMInfo[],
+    entries,
     total,
   };
 }

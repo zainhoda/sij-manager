@@ -18,6 +18,7 @@ import {
   Settings,
   X,
   PauseCircle,
+  Warehouse,
 } from "lucide-react";
 
 interface DemandEntry {
@@ -41,6 +42,9 @@ interface DemandEntry {
   production_hold_reason: string | null;
   bom_description?: string;
   total_steps?: number;
+  on_hand_qty?: number;
+  to_produce_qty?: number;
+  carton_qty?: number;
 }
 
 interface DemandSummary {
@@ -109,6 +113,9 @@ export default function DemandPool() {
   const [editHoldUntil, setEditHoldUntil] = useState("");
   const [editHoldReason, setEditHoldReason] = useState("");
 
+  // Inventory refresh state
+  const [refreshingInventory, setRefreshingInventory] = useState(false);
+
   const fetchSummary = useCallback(async () => {
     try {
       const response = await fetch("/api/demand/summary");
@@ -127,6 +134,7 @@ export default function DemandPool() {
         offset: (page * pageSize).toString(),
         order_by: "due_date",
         order_dir: "asc",
+        include_inventory: "true",
       });
       if (search) params.set("search", search);
       if (statusFilter) params.set("status", statusFilter);
@@ -327,6 +335,21 @@ export default function DemandPool() {
     }
   };
 
+  // Handle refreshing inventory data
+  const handleRefreshInventory = async () => {
+    setRefreshingInventory(true);
+    try {
+      // Clear the server-side cache
+      await fetch("/api/fishbowl/inventory/refresh", { method: "POST" });
+      // Re-fetch entries with fresh inventory data
+      await fetchEntries();
+    } catch (error) {
+      console.error("Failed to refresh inventory:", error);
+    } finally {
+      setRefreshingInventory(false);
+    }
+  };
+
   return (
     <div className="page">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -337,8 +360,17 @@ export default function DemandPool() {
           </p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn btn-secondary" onClick={fetchEntries}>
+          <button className="btn btn-secondary" onClick={fetchEntries} title="Refresh list">
             <RefreshCw size={16} />
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={handleRefreshInventory}
+            disabled={refreshingInventory}
+            title="Refresh inventory data from Fishbowl"
+          >
+            <Warehouse size={16} style={{ marginRight: 4 }} />
+            {refreshingInventory ? "Refreshing..." : "Refresh Inventory"}
           </button>
           <button className="btn btn-secondary" onClick={() => setShowAddModal(true)}>
             <Plus size={16} style={{ marginRight: 4 }} />
@@ -452,6 +484,49 @@ export default function DemandPool() {
                   <th style={{ padding: "12px 16px", textAlign: "left", fontWeight: 600, fontSize: 13 }}>BOM</th>
                   <th style={{ padding: "12px 16px", textAlign: "left", fontWeight: 600, fontSize: 13 }}>Customer</th>
                   <th style={{ padding: "12px 16px", textAlign: "right", fontWeight: 600, fontSize: 13 }}>Qty</th>
+                  <th style={{ padding: "12px 16px", textAlign: "right", fontWeight: 600, fontSize: 13 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}>
+                      On Hand
+                      <span
+                        title="Live data from Fishbowl"
+                        style={{
+                          display: "inline-block",
+                          padding: "1px 4px",
+                          borderRadius: 3,
+                          fontSize: 9,
+                          fontWeight: 600,
+                          background: "#dbeafe",
+                          color: "#1d4ed8",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.5px",
+                        }}
+                      >
+                        Live
+                      </span>
+                    </div>
+                  </th>
+                  <th style={{ padding: "12px 16px", textAlign: "right", fontWeight: 600, fontSize: 13 }}>To Produce</th>
+                  <th style={{ padding: "12px 16px", textAlign: "right", fontWeight: 600, fontSize: 13 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}>
+                      <span title="Pieces per carton">Pcs/Ctn</span>
+                      <span
+                        title="Pieces per carton from Fishbowl"
+                        style={{
+                          display: "inline-block",
+                          padding: "1px 4px",
+                          borderRadius: 3,
+                          fontSize: 9,
+                          fontWeight: 600,
+                          background: "#dbeafe",
+                          color: "#1d4ed8",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.5px",
+                        }}
+                      >
+                        Live
+                      </span>
+                    </div>
+                  </th>
                   <th style={{ padding: "12px 16px", textAlign: "center", fontWeight: 600, fontSize: 13 }}>Steps</th>
                   <th style={{ padding: "12px 16px", textAlign: "center", fontWeight: 600, fontSize: 13 }}>Due Date</th>
                   <th style={{ padding: "12px 16px", textAlign: "center", fontWeight: 600, fontSize: 13 }}>Status</th>
@@ -486,6 +561,34 @@ export default function DemandPool() {
                     </td>
                     <td style={{ padding: "12px 16px", fontSize: 14, textAlign: "right", fontWeight: 500 }}>
                       {entry.quantity}
+                    </td>
+                    <td style={{ padding: "12px 16px", fontSize: 14, textAlign: "right", background: "rgba(219, 234, 254, 0.3)" }}>
+                      {entry.on_hand_qty !== undefined ? (
+                        <span style={{ color: "#1e40af", fontWeight: 500 }}>{entry.on_hand_qty}</span>
+                      ) : (
+                        <span style={{ color: "#94a3b8" }}>-</span>
+                      )}
+                    </td>
+                    <td style={{ padding: "12px 16px", fontSize: 14, textAlign: "right", fontWeight: 500 }}>
+                      {entry.to_produce_qty !== undefined ? (
+                        <span
+                          style={{
+                            color: entry.to_produce_qty === 0 ? "#16a34a" : "#dc2626",
+                            fontWeight: 600,
+                          }}
+                        >
+                          {entry.to_produce_qty}
+                        </span>
+                      ) : (
+                        <span style={{ color: "#94a3b8" }}>-</span>
+                      )}
+                    </td>
+                    <td style={{ padding: "12px 16px", fontSize: 14, textAlign: "right", background: "rgba(219, 234, 254, 0.3)" }}>
+                      {entry.carton_qty !== undefined && entry.carton_qty > 1 ? (
+                        <span style={{ color: "#1e40af", fontWeight: 500 }}>{entry.carton_qty}</span>
+                      ) : (
+                        <span style={{ color: "#94a3b8" }}>1</span>
+                      )}
                     </td>
                     <td style={{ padding: "12px 16px", textAlign: "center" }}>
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
